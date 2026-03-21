@@ -1,0 +1,154 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"strconv"
+
+	"github.com/agentity/agentity/internal/identity"
+	"github.com/go-chi/chi/v5"
+)
+
+// IdentityHandlers provides HTTP handlers for agent identity management.
+type IdentityHandlers struct {
+	service *identity.Service
+}
+
+// NewIdentityHandlers creates new identity handlers.
+func NewIdentityHandlers(service *identity.Service) *IdentityHandlers {
+	return &IdentityHandlers{service: service}
+}
+
+// RegisterAgent handles POST /api/v1/agents
+func (h *IdentityHandlers) RegisterAgent(w http.ResponseWriter, r *http.Request) {
+	var req identity.RegisterAgentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/invalid-request", "Invalid Request", "Failed to parse request body: "+err.Error())
+		return
+	}
+
+	agent, privateKey, err := h.service.RegisterAgent(req)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/registration-failed", "Registration Failed", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"agent":       agent,
+		"private_key": privateKey,
+	})
+}
+
+// ListAgents handles GET /api/v1/agents
+func (h *IdentityHandlers) ListAgents(w http.ResponseWriter, r *http.Request) {
+	filter := identity.AgentFilter{
+		Status:   identity.AgentStatus(r.URL.Query().Get("status")),
+		ParentID: r.URL.Query().Get("parent_id"),
+		Model:    r.URL.Query().Get("model"),
+	}
+
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil {
+			filter.Limit = v
+		}
+	}
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if v, err := strconv.Atoi(o); err == nil {
+			filter.Offset = v
+		}
+	}
+
+	agents, err := h.service.ListAgents(filter)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "https://agentity.dev/errors/internal", "Internal Error", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"agents": agents,
+		"count":  len(agents),
+	})
+}
+
+// GetAgent handles GET /api/v1/agents/{id}
+func (h *IdentityHandlers) GetAgent(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/invalid-request", "Invalid Request", "Agent ID is required")
+		return
+	}
+
+	// The URL param will have the UUID portion; reconstruct the full agent ID.
+	agentID := "agent://" + id
+
+	agent, err := h.service.GetAgent(agentID)
+	if err != nil {
+		writeProblem(w, http.StatusNotFound, "https://agentity.dev/errors/not-found", "Not Found", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, agent)
+}
+
+// GetDelegationTree handles GET /api/v1/agents/{id}/tree
+func (h *IdentityHandlers) GetDelegationTree(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	agentID := "agent://" + id
+
+	tree, err := h.service.GetDelegationTree(agentID)
+	if err != nil {
+		writeProblem(w, http.StatusNotFound, "https://agentity.dev/errors/not-found", "Not Found", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, tree)
+}
+
+// SuspendAgent handles POST /api/v1/agents/{id}/suspend
+func (h *IdentityHandlers) SuspendAgent(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	agentID := "agent://" + id
+
+	if err := h.service.SuspendAgent(agentID); err != nil {
+		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/suspend-failed", "Suspend Failed", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "suspended"})
+}
+
+// RevokeAgent handles POST /api/v1/agents/{id}/revoke
+func (h *IdentityHandlers) RevokeAgent(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	agentID := "agent://" + id
+
+	var req struct {
+		Cascade bool `json:"cascade"`
+	}
+	// Body is optional; if not provided, cascade defaults to false.
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	if err := h.service.RevokeAgent(agentID, req.Cascade); err != nil {
+		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/revoke-failed", "Revoke Failed", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+}
+
+// RotateKey handles POST /api/v1/agents/{id}/rotate-key
+func (h *IdentityHandlers) RotateKey(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	agentID := "agent://" + id
+
+	agent, privateKey, err := h.service.RotateKey(agentID)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/rotate-failed", "Key Rotation Failed", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"agent":       agent,
+		"private_key": privateKey,
+	})
+}

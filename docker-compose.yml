@@ -1,0 +1,62 @@
+version: "3.9"
+
+services:
+  agentity:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      AGENTITY_SERVER_PORT: "8080"
+      AGENTITY_STORE_TYPE: "postgres"
+      AGENTITY_STORE_DSN: "postgres://agentity:agentity@postgres:5432/agentity?sslmode=disable"
+      AGENTITY_REDIS_ENABLED: "true"
+      AGENTITY_REDIS_ADDRESS: "redis:6379"
+      AGENTITY_AUTH_ADMIN_API_KEY: "change-me-in-production"
+      AGENTITY_LOG_LEVEL: "info"
+      AGENTITY_LOG_FORMAT: "json"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agentity
+      POSTGRES_PASSWORD: agentity
+      POSTGRES_DB: agentity
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentity"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  redisdata:
