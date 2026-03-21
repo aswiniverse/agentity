@@ -203,6 +203,14 @@ print(f"Chain depth: {verified.chain_depth}")    # 2
 
 Install: `pip install agentity`
 
+**Framework integration examples:**
+
+| Framework | Example |
+|---|---|
+| LangChain | [sdk/python/examples/langchain_example.py](sdk/python/examples/langchain_example.py) |
+| CrewAI | [sdk/python/examples/crewai_example.py](sdk/python/examples/crewai_example.py) |
+| AutoGen | [sdk/python/examples/autogen_example.py](sdk/python/examples/autogen_example.py) |
+
 ---
 
 ## Go SDK
