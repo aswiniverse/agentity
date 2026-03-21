@@ -7,7 +7,9 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"os"
 	"sync"
 )
 
@@ -143,6 +145,40 @@ func NewRootKeyStore() (*RootKeyStore, error) {
 	kp, err := GenerateKeyPair()
 	if err != nil {
 		return nil, err
+	}
+	return &RootKeyStore{keyPair: kp}, nil
+}
+
+// LoadOrCreateRootKeyStore loads the root key from keyFile if it exists, or
+// generates a new one and persists it. This ensures token signatures survive
+// server restarts (C5 fix).
+func LoadOrCreateRootKeyStore(keyFile string) (*RootKeyStore, error) {
+	data, err := os.ReadFile(keyFile)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read key file: %w", err)
+	}
+
+	if err == nil {
+		// File exists: load the key.
+		priv, err := ParsePrivateKeyPEM(data)
+		if err != nil {
+			return nil, fmt.Errorf("parse root key PEM: %w", err)
+		}
+		return NewRootKeyStoreFromKey(priv), nil
+	}
+
+	// File doesn't exist: generate and persist.
+	kp, err := GenerateKeyPair()
+	if err != nil {
+		return nil, fmt.Errorf("generate root key: %w", err)
+	}
+	pem, err := MarshalPrivateKeyPEM(kp.PrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("marshal root key: %w", err)
+	}
+	// Write with restrictive permissions (owner read/write only).
+	if err := os.WriteFile(keyFile, pem, 0600); err != nil {
+		return nil, fmt.Errorf("write key file %s: %w", keyFile, err)
 	}
 	return &RootKeyStore{keyPair: kp}, nil
 }

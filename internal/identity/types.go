@@ -66,6 +66,7 @@ type DelegationTree struct {
 type Store interface {
 	CreateAgent(agent *AgentIdentity) error
 	GetAgent(id string) (*AgentIdentity, error)
+	GetAgentByKeyID(keyID string) (*AgentIdentity, error)
 	ListAgents(filter AgentFilter) ([]*AgentIdentity, error)
 	UpdateAgent(agent *AgentIdentity) error
 	DeleteAgent(id string) error

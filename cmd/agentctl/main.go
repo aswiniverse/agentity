@@ -27,8 +27,15 @@ func main() {
 		Short: "Agentity CLI - manage agents, tokens, and policies",
 	}
 
-	rootCmd.PersistentFlags().StringVar(&serverURL, "server", envOrDefault("AGENTITY_SERVER", "http://localhost:8080"), "Agentity server URL")
-	rootCmd.PersistentFlags().StringVar(&adminKey, "admin-key", envOrDefault("AGENTITY_ADMIN_KEY", "dev-admin-key"), "Admin API key")
+	rootCmd.PersistentFlags().StringVar(&serverURL, "server",
+		envOrDefault("AGENTITY_SERVER", "http://localhost:8080"),
+		"Agentity server URL")
+
+	// M1 fix: no hardcoded default for the admin key.
+	// Users must supply it via AGENTITY_ADMIN_KEY env var or --admin-key flag.
+	rootCmd.PersistentFlags().StringVar(&adminKey, "admin-key",
+		os.Getenv("AGENTITY_ADMIN_KEY"),
+		"Admin API key (required; set via AGENTITY_ADMIN_KEY env var)")
 
 	rootCmd.AddCommand(agentsCmd())
 	rootCmd.AddCommand(tokensCmd())
@@ -37,6 +44,13 @@ func main() {
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+func requireAdminKey() error {
+	if adminKey == "" {
+		return fmt.Errorf("admin key is required: set AGENTITY_ADMIN_KEY env var or --admin-key flag")
+	}
+	return nil
 }
 
 func newClient() *sdk.Client {
@@ -53,6 +67,9 @@ func agentsCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List all agents",
 		RunE: func(_ *cobra.Command, _ []string) error {
+			if err := requireAdminKey(); err != nil {
+				return err
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			resp, err := doRawGet(ctx, "/api/v1/agents")
@@ -74,6 +91,9 @@ func agentsCmd() *cobra.Command {
 		Use:   "register",
 		Short: "Register a new agent",
 		RunE: func(_ *cobra.Command, _ []string) error {
+			if err := requireAdminKey(); err != nil {
+				return err
+			}
 			client := newClient()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -93,6 +113,7 @@ func agentsCmd() *cobra.Command {
 				return err
 			}
 
+			fmt.Fprintf(os.Stderr, "WARNING: Store the private key securely — it will not be shown again.\n")
 			printJSON(map[string]interface{}{
 				"agent":       agent,
 				"private_key": privKey,
@@ -111,6 +132,9 @@ func agentsCmd() *cobra.Command {
 		Short: "Get agent details",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			if err := requireAdminKey(); err != nil {
+				return err
+			}
 			client := newClient()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -129,6 +153,9 @@ func agentsCmd() *cobra.Command {
 		Short: "Revoke an agent",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			if err := requireAdminKey(); err != nil {
+				return err
+			}
 			client := newClient()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -160,6 +187,9 @@ func tokensCmd() *cobra.Command {
 		Use:   "issue",
 		Short: "Issue a root token for an agent",
 		RunE: func(_ *cobra.Command, _ []string) error {
+			if err := requireAdminKey(); err != nil {
+				return err
+			}
 			client := newClient()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -195,6 +225,9 @@ func tokensCmd() *cobra.Command {
 		Short: "Verify a token",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			if err := requireAdminKey(); err != nil {
+				return err
+			}
 			client := newClient()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -213,6 +246,9 @@ func tokensCmd() *cobra.Command {
 		Short: "Revoke a token by ID",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			if err := requireAdminKey(); err != nil {
+				return err
+			}
 			client := newClient()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -239,6 +275,9 @@ func adminCmd() *cobra.Command {
 		Use:   "stats",
 		Short: "Show system statistics",
 		RunE: func(_ *cobra.Command, _ []string) error {
+			if err := requireAdminKey(); err != nil {
+				return err
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			resp, err := doRawGet(ctx, "/api/v1/admin/stats")
@@ -259,6 +298,9 @@ func adminCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List all policies",
 		RunE: func(_ *cobra.Command, _ []string) error {
+			if err := requireAdminKey(); err != nil {
+				return err
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			resp, err := doRawGet(ctx, "/api/v1/admin/policies")
@@ -280,6 +322,9 @@ func adminCmd() *cobra.Command {
 		Use:   "create",
 		Short: "Create a policy",
 		RunE: func(_ *cobra.Command, _ []string) error {
+			if err := requireAdminKey(); err != nil {
+				return err
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			body := map[string]interface{}{

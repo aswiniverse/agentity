@@ -41,6 +41,15 @@ func (s *PostgresStore) Close() {
 	s.pool.Close()
 }
 
+// Ping verifies the database connection is alive.
+func (s *PostgresStore) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
+}
+
+const agentSelectCols = `id, name, description, version, public_key, key_id,
+	system_prompt_hash, tool_fingerprint, tools, model,
+	parent_id, status, metadata, created_at, updated_at`
+
 // CreateAgent inserts a new agent into the database.
 func (s *PostgresStore) CreateAgent(agent *identity.AgentIdentity) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -80,16 +89,32 @@ func (s *PostgresStore) GetAgent(id string) (*identity.AgentIdentity, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	query := `SELECT id, name, description, version, public_key, key_id,
-		system_prompt_hash, tool_fingerprint, tools, model,
-		parent_id, status, metadata, created_at, updated_at
-	FROM agents WHERE id = $1`
+	query := `SELECT ` + agentSelectCols + ` FROM agents WHERE id = $1`
+	row := s.pool.QueryRow(ctx, query, id)
+	return scanAgent(row)
+}
 
+// GetAgentByKeyID retrieves an agent by its key_id using the indexed column.
+// M5 fix: O(1) indexed lookup — key_id has an index in the schema.
+func (s *PostgresStore) GetAgentByKeyID(keyID string) (*identity.AgentIdentity, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	query := `SELECT ` + agentSelectCols + ` FROM agents WHERE key_id = $1 LIMIT 1`
+	row := s.pool.QueryRow(ctx, query, keyID)
+	return scanAgent(row)
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanAgent(row rowScanner) (*identity.AgentIdentity, error) {
 	var agent identity.AgentIdentity
 	var toolsJSON, metadataJSON string
 	var parentID *string
 
-	err := s.pool.QueryRow(ctx, query, id).Scan(
+	err := row.Scan(
 		&agent.ID, &agent.Name, &agent.Description, &agent.Version,
 		&agent.PublicKey, &agent.KeyID,
 		&agent.Fingerprint.SystemPromptHash, &agent.Fingerprint.ToolFingerprint,
@@ -98,22 +123,20 @@ func (s *PostgresStore) GetAgent(id string) (*identity.AgentIdentity, error) {
 		&metadataJSON, &agent.CreatedAt, &agent.UpdatedAt,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("query agent: %w", err)
+		return nil, fmt.Errorf("scan agent: %w", err)
 	}
 
 	if parentID != nil {
 		agent.ParentID = *parentID
 	}
-
 	if err := json.Unmarshal([]byte(toolsJSON), &agent.Fingerprint.Tools); err != nil {
 		return nil, fmt.Errorf("unmarshal tools: %w", err)
 	}
-	if metadataJSON != "" {
+	if metadataJSON != "" && metadataJSON != "null" {
 		if err := json.Unmarshal([]byte(metadataJSON), &agent.Metadata); err != nil {
 			return nil, fmt.Errorf("unmarshal metadata: %w", err)
 		}
 	}
-
 	return &agent, nil
 }
 
@@ -122,10 +145,7 @@ func (s *PostgresStore) ListAgents(filter identity.AgentFilter) ([]*identity.Age
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	query := `SELECT id, name, description, version, public_key, key_id,
-		system_prompt_hash, tool_fingerprint, tools, model,
-		parent_id, status, metadata, created_at, updated_at
-	FROM agents WHERE 1=1`
+	query := `SELECT ` + agentSelectCols + ` FROM agents WHERE 1=1`
 
 	var args []interface{}
 	argIdx := 1
@@ -161,33 +181,11 @@ func (s *PostgresStore) ListAgents(filter identity.AgentFilter) ([]*identity.Age
 
 	var agents []*identity.AgentIdentity
 	for rows.Next() {
-		var agent identity.AgentIdentity
-		var toolsJSON, metadataJSON string
-		var parentID *string
-
-		if err := rows.Scan(
-			&agent.ID, &agent.Name, &agent.Description, &agent.Version,
-			&agent.PublicKey, &agent.KeyID,
-			&agent.Fingerprint.SystemPromptHash, &agent.Fingerprint.ToolFingerprint,
-			&toolsJSON, &agent.Fingerprint.Model,
-			&parentID, &agent.Status,
-			&metadataJSON, &agent.CreatedAt, &agent.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan agent: %w", err)
+		agent, err := scanAgent(rows)
+		if err != nil {
+			return nil, err
 		}
-
-		if parentID != nil {
-			agent.ParentID = *parentID
-		}
-		if err := json.Unmarshal([]byte(toolsJSON), &agent.Fingerprint.Tools); err != nil {
-			return nil, fmt.Errorf("unmarshal tools: %w", err)
-		}
-		if metadataJSON != "" {
-			if err := json.Unmarshal([]byte(metadataJSON), &agent.Metadata); err != nil {
-				return nil, fmt.Errorf("unmarshal metadata: %w", err)
-			}
-		}
-		agents = append(agents, &agent)
+		agents = append(agents, agent)
 	}
 	return agents, rows.Err()
 }
@@ -246,11 +244,7 @@ func (s *PostgresStore) DeleteAgent(id string) error {
 
 // GetChildAgents returns all agents whose parent_id matches the given ID.
 func (s *PostgresStore) GetChildAgents(parentID string) ([]*identity.AgentIdentity, error) {
-	filter := identity.AgentFilter{
-		ParentID: parentID,
-		Limit:    1000,
-	}
-	return s.ListAgents(filter)
+	return s.ListAgents(identity.AgentFilter{ParentID: parentID, Limit: 1000})
 }
 
 func nilIfEmpty(s string) *string {

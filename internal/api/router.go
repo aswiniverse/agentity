@@ -27,26 +27,49 @@ type RouterConfig struct {
 	AuditLogger      *audit.Logger
 	AdminAPIKey      string
 	IssuerURL        string
+	// AllowedOrigins controls CORS. Use ["*"] for dev, explicit origins for prod.
+	AllowedOrigins []string
+	// ReadinessCheck is called by GET /ready to verify dependencies are healthy.
+	ReadinessCheck func() error
 }
 
 // NewRouter creates the chi router with all routes and middleware wired.
 func NewRouter(cfg RouterConfig) *chi.Mux {
 	r := chi.NewRouter()
 
+	if len(cfg.AllowedOrigins) == 0 {
+		cfg.AllowedOrigins = []string{"*"}
+	}
+
 	// Global middleware.
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.RealIP)
 	r.Use(RequestIDMiddleware)
 	r.Use(LoggingMiddleware(cfg.Logger))
-	r.Use(CORSMiddleware)
+	r.Use(CORSMiddleware(cfg.AllowedOrigins))
+	r.Use(MaxBytesMiddleware)
 
 	// Rate limiting: 100 requests per second per IP.
 	limiter := NewRateLimiter(100, time.Second)
 	r.Use(limiter.Middleware)
 
-	// Health check.
+	// Liveness: always returns 200 (process is running).
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	// Readiness: checks that dependencies (DB, Redis) are reachable.
+	r.Get("/ready", func(w http.ResponseWriter, r *http.Request) {
+		if cfg.ReadinessCheck != nil {
+			if err := cfg.ReadinessCheck(); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+					"status": "unavailable",
+					"reason": err.Error(),
+				})
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	})
 
 	// OIDC discovery endpoints (public).
@@ -56,7 +79,8 @@ func NewRouter(cfg RouterConfig) *chi.Mux {
 	r.Get("/oidc/userinfo", oidcHandlers.UserInfo)
 
 	// OAuth2 endpoints (public).
-	oauthHandlers := NewOAuthHandlers(cfg.RootKeyStore, cfg.DelegationEngine)
+	// C3 fix: revocationReg is now wired so RevokeEndpoint actually revokes.
+	oauthHandlers := NewOAuthHandlers(cfg.RootKeyStore, cfg.DelegationEngine, cfg.RevocationReg)
 	r.Post("/oauth/token", oauthHandlers.TokenEndpoint)
 	r.Post("/oauth/introspect", oauthHandlers.IntrospectEndpoint)
 	r.Post("/oauth/revoke", oauthHandlers.RevokeEndpoint)
@@ -76,9 +100,17 @@ func NewRouter(cfg RouterConfig) *chi.Mux {
 		r.Post("/agents/{id}/rotate-key", idHandlers.RotateKey)
 
 		// Token endpoints.
-		tokenHandlers := NewTokenHandlers(cfg.RootKeyStore, cfg.DelegationEngine, cfg.RevocationReg, cfg.AuditLogger)
+		// C4 fix: identityService wired so IssueToken verifies agent existence.
+		// C4 fix: DelegateToken replaced by SubmitDelegatedToken — no private keys over the wire.
+		tokenHandlers := NewTokenHandlers(
+			cfg.RootKeyStore,
+			cfg.DelegationEngine,
+			cfg.RevocationReg,
+			cfg.AuditLogger,
+			cfg.IdentityService,
+		)
 		r.Post("/tokens/issue", tokenHandlers.IssueToken)
-		r.Post("/tokens/delegate", tokenHandlers.DelegateToken)
+		r.Post("/tokens/delegate", tokenHandlers.SubmitDelegatedToken)
 		r.Post("/tokens/verify", tokenHandlers.VerifyToken)
 		r.Post("/tokens/revoke", tokenHandlers.RevokeToken)
 		r.Get("/tokens/{id}/chain", tokenHandlers.GetChain)

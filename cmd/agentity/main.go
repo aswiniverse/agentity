@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/agentity/agentity/internal/server"
 	"github.com/agentity/agentity/internal/store"
 	agcrypto "github.com/agentity/agentity/pkg/crypto"
+	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 )
@@ -36,7 +38,7 @@ func main() {
 	}
 
 	rootCmd.Flags().StringVar(&configFile, "config", "", "Path to configuration file")
-	rootCmd.Flags().BoolVar(&devMode, "dev", false, "Enable development mode (in-memory store, auto-generated keys)")
+	rootCmd.Flags().BoolVar(&devMode, "dev", false, "Enable development mode (in-memory store, auto-generated keys, hardcoded admin key)")
 	rootCmd.Flags().IntVar(&port, "port", 8080, "Server port")
 	rootCmd.Flags().StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 
@@ -60,68 +62,95 @@ func runServer(configFile string, devMode bool, port int, logLevel string) error
 		if port != 8080 {
 			cfg.Server.Port = port
 		}
+
+		// C2 fix: refuse to start in production if admin key is not configured.
+		if cfg.Auth.AdminAPIKey == "" {
+			return fmt.Errorf("AGENTITY_AUTH_ADMIN_API_KEY must be set in production mode")
+		}
 	}
 
-	// Override log level if specified.
 	if logLevel != "info" {
 		cfg.Log.Level = logLevel
 	}
 
 	// Set up logger.
+	level, _ := zerolog.ParseLevel(cfg.Log.Level)
 	var logger zerolog.Logger
-	level, err := zerolog.ParseLevel(cfg.Log.Level)
-	if err != nil {
-		level = zerolog.InfoLevel
-	}
-
 	if cfg.Log.Format == "console" {
 		logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout}).
-			Level(level).
-			With().
-			Timestamp().
-			Str("service", "agentity").
-			Logger()
+			Level(level).With().Timestamp().Str("service", "agentity").Logger()
 	} else {
 		logger = zerolog.New(os.Stdout).
-			Level(level).
-			With().
-			Timestamp().
-			Str("service", "agentity").
-			Logger()
+			Level(level).With().Timestamp().Str("service", "agentity").Logger()
 	}
 
-	// Initialize root key store.
-	rootKeyStore, err := agcrypto.NewRootKeyStore()
-	if err != nil {
-		return fmt.Errorf("create root key store: %w", err)
-	}
-
+	// C5 fix: initialize root key store from file in production, ephemeral in dev.
+	var rootKeyStore *agcrypto.RootKeyStore
 	if devMode {
-		logger.Info().
+		rootKeyStore, err = agcrypto.NewRootKeyStore()
+		if err != nil {
+			return fmt.Errorf("create ephemeral root key: %w", err)
+		}
+		logger.Warn().
 			Str("key_id", rootKeyStore.KeyID()).
 			Str("admin_key", cfg.Auth.AdminAPIKey).
-			Msg("dev mode: ephemeral root key generated")
+			Msg("DEV MODE: ephemeral root key (not suitable for production)")
+	} else {
+		if cfg.Crypto.RootKeyFile == "" {
+			return fmt.Errorf("AGENTITY_CRYPTO_ROOT_KEY_FILE must be set in production mode")
+		}
+		rootKeyStore, err = agcrypto.LoadOrCreateRootKeyStore(cfg.Crypto.RootKeyFile)
+		if err != nil {
+			return fmt.Errorf("load root key store from %s: %w", cfg.Crypto.RootKeyFile, err)
+		}
+		logger.Info().
+			Str("key_id", rootKeyStore.KeyID()).
+			Str("key_file", cfg.Crypto.RootKeyFile).
+			Msg("root key loaded")
 	}
 
-	// Initialize store.
-	memStore := store.NewMemoryStore()
+	// M8 fix: select the store backend based on configuration.
+	var agentStore identity.Store
+	var readinessCheck func() error
 
-	// Initialize revocation registry (no Redis in dev mode).
-	revReg := revocation.NewRegistry(nil)
+	switch cfg.Store.Type {
+	case "postgres":
+		if cfg.Store.DSN == "" {
+			return fmt.Errorf("store.dsn must be set when store.type=postgres")
+		}
+		pgStore, err := store.NewPostgresStore(context.Background(), cfg.Store.DSN, cfg.Store.MaxConns)
+		if err != nil {
+			return fmt.Errorf("connect to postgres: %w", err)
+		}
+		agentStore = pgStore
+		readinessCheck = func() error { return pgStore.Ping(context.Background()) }
+		logger.Info().Str("dsn_host", extractHost(cfg.Store.DSN)).Msg("using postgres store")
+	default:
+		agentStore = store.NewMemoryStore()
+		logger.Info().Msg("using in-memory store (data is not persisted across restarts)")
+	}
 
-	// Initialize audit logger.
+	// Initialize Redis revocation registry if configured.
+	var redisClient *redis.Client
+	if cfg.Redis.Enabled {
+		redisClient = redis.NewClient(&redis.Options{
+			Addr:     cfg.Redis.Address,
+			Password: cfg.Redis.Password,
+			DB:       cfg.Redis.DB,
+		})
+		if err := redisClient.Ping(context.Background()).Err(); err != nil {
+			return fmt.Errorf("connect to redis at %s: %w", cfg.Redis.Address, err)
+		}
+		logger.Info().Str("addr", cfg.Redis.Address).Msg("using redis for revocation registry")
+	}
+	revReg := revocation.NewRegistry(redisClient)
+
+	// Initialize services.
 	auditLog := audit.NewLogger(rootKeyStore.PrivateKey())
+	idService := identity.NewService(agentStore)
+	keyResolver := delegation.NewKeyResolver(rootKeyStore, agentStore)
+	delegEngine := delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
 
-	// Initialize identity service.
-	idService := identity.NewService(memStore)
-
-	// Initialize key resolver.
-	keyResolver := delegation.NewKeyResolver(rootKeyStore, memStore)
-
-	// Initialize delegation engine.
-	delegEngine := delegation.NewEngine(memStore, revReg, auditLog, keyResolver)
-
-	// Initialize policy engine.
 	policyEngine, err := policy.NewEngine()
 	if err != nil {
 		return fmt.Errorf("create policy engine: %w", err)
@@ -137,9 +166,10 @@ func runServer(configFile string, devMode bool, port int, logLevel string) error
 		PolicyEngine:     policyEngine,
 		AuditLogger:      auditLog,
 		AdminAPIKey:      cfg.Auth.AdminAPIKey,
+		AllowedOrigins:   []string{"*"}, // restrict in production via config
+		ReadinessCheck:   readinessCheck,
 	})
 
-	// Create and start server.
 	srv := server.New(router, cfg.Server, logger)
 
 	logger.Info().
@@ -149,4 +179,14 @@ func runServer(configFile string, devMode bool, port int, logLevel string) error
 		Msg("Agentity server starting")
 
 	return srv.Start()
+}
+
+// extractHost returns a safe host string from a DSN for logging (no passwords).
+func extractHost(dsn string) string {
+	for i, c := range dsn {
+		if c == '@' {
+			return dsn[i+1:]
+		}
+	}
+	return dsn
 }

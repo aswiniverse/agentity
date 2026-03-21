@@ -1,12 +1,12 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 
 	"github.com/agentity/agentity/internal/audit"
 	"github.com/agentity/agentity/internal/delegation"
+	"github.com/agentity/agentity/internal/identity"
 	"github.com/agentity/agentity/internal/revocation"
 	agcrypto "github.com/agentity/agentity/pkg/crypto"
 	"github.com/agentity/agentity/pkg/token"
@@ -18,15 +18,23 @@ type TokenHandlers struct {
 	delegationEngine *delegation.Engine
 	revocationReg    *revocation.Registry
 	auditLogger      *audit.Logger
+	identityService  *identity.Service
 }
 
 // NewTokenHandlers creates new token handlers.
-func NewTokenHandlers(rootKeyStore *agcrypto.RootKeyStore, engine *delegation.Engine, rev *revocation.Registry, auditLog *audit.Logger) *TokenHandlers {
+func NewTokenHandlers(
+	rootKeyStore *agcrypto.RootKeyStore,
+	engine *delegation.Engine,
+	rev *revocation.Registry,
+	auditLog *audit.Logger,
+	idService *identity.Service,
+) *TokenHandlers {
 	return &TokenHandlers{
 		rootKeyStore:     rootKeyStore,
 		delegationEngine: engine,
 		revocationReg:    rev,
 		auditLogger:      auditLog,
+		identityService:  idService,
 	}
 }
 
@@ -38,6 +46,7 @@ type IssueTokenRequest struct {
 }
 
 // IssueToken handles POST /api/v1/tokens/issue
+// M9 fix: verifies agent exists and is active before issuing.
 func (h *TokenHandlers) IssueToken(w http.ResponseWriter, r *http.Request) {
 	var req IssueTokenRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -51,6 +60,17 @@ func (h *TokenHandlers) IssueToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Capabilities) == 0 {
 		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/invalid-request", "Invalid Request", "capabilities must not be empty")
+		return
+	}
+
+	// M9: verify agent exists and is active before issuing a token for it.
+	agent, err := h.identityService.GetAgent(req.AgentID)
+	if err != nil {
+		writeProblem(w, http.StatusNotFound, "https://agentity.dev/errors/agent-not-found", "Agent Not Found", "Agent not found: "+req.AgentID)
+		return
+	}
+	if agent.Status != identity.AgentStatusActive {
+		writeProblem(w, http.StatusForbidden, "https://agentity.dev/errors/agent-not-active", "Agent Not Active", "Agent is "+string(agent.Status)+", cannot issue token")
 		return
 	}
 
@@ -74,9 +94,7 @@ func (h *TokenHandlers) IssueToken(w http.ResponseWriter, r *http.Request) {
 			"issue",
 			act.TokenID,
 			"success",
-			map[string]interface{}{
-				"capabilities": req.Capabilities,
-			},
+			map[string]interface{}{"capabilities": req.Capabilities},
 		)
 	}
 
@@ -86,58 +104,57 @@ func (h *TokenHandlers) IssueToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// DelegateTokenRequest is the request body for delegating a token.
-type DelegateTokenRequest struct {
-	ParentToken    string               `json:"parent_token"`
-	ChildAgentID   string               `json:"child_agent_id"`
-	Capabilities   []string             `json:"capabilities"`
-	Conditions     token.BlockConditions `json:"conditions"`
-	ParentAgentKey string               `json:"parent_agent_key"` // base64url-encoded private key
+// SubmitDelegatedTokenRequest accepts a pre-signed delegated ACT token for
+// server-side validation and audit logging.
+//
+// C4 fix: delegation signing now happens client-side (using the Go SDK's
+// DelegateTokenLocally method). The server never receives agent private keys.
+// The agent signs the new delegation block locally and submits the full
+// encoded token for verification and audit recording only.
+type SubmitDelegatedTokenRequest struct {
+	DelegatedToken string `json:"delegated_token"` // pre-signed by the parent agent locally
 }
 
-// DelegateToken handles POST /api/v1/tokens/delegate
-func (h *TokenHandlers) DelegateToken(w http.ResponseWriter, r *http.Request) {
-	var req DelegateTokenRequest
+// SubmitDelegatedToken handles POST /api/v1/tokens/delegate
+func (h *TokenHandlers) SubmitDelegatedToken(w http.ResponseWriter, r *http.Request) {
+	var req SubmitDelegatedTokenRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/invalid-request", "Invalid Request", "Failed to parse request body: "+err.Error())
 		return
 	}
 
-	if req.ParentToken == "" || req.ChildAgentID == "" || req.ParentAgentKey == "" {
-		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/invalid-request", "Invalid Request", "parent_token, child_agent_id, and parent_agent_key are required")
+	if req.DelegatedToken == "" {
+		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/invalid-request", "Invalid Request", "delegated_token is required")
 		return
 	}
 
-	privKey, err := agcrypto.DecodePrivateKeyBase64(req.ParentAgentKey)
+	// Verify the pre-signed delegated token: checks all signatures, capability
+	// attenuation, expiry, revocation.
+	verified, err := h.delegationEngine.Verify(r.Context(), req.DelegatedToken)
 	if err != nil {
-		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/invalid-key", "Invalid Key", "Failed to decode parent_agent_key: "+err.Error())
+		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/delegation-invalid", "Delegation Invalid", err.Error())
 		return
 	}
 
-	delegReq := delegation.DelegationRequest{
-		ParentTokenEncoded: req.ParentToken,
-		ChildAgentID:       req.ChildAgentID,
-		Capabilities:       req.Capabilities,
-		Conditions:         req.Conditions,
-		ParentAgentKey:     privKey,
-	}
-
-	encoded, err := h.delegationEngine.Delegate(r.Context(), delegReq)
-	if err != nil {
-		writeProblem(w, http.StatusForbidden, "https://agentity.dev/errors/capability-amplification", "Delegation Failed", err.Error())
-		return
-	}
-
-	// Decode to get token ID.
-	act, _ := token.Decode(encoded)
-	tokenID := ""
-	if act != nil {
-		tokenID = act.TokenID
+	if h.auditLogger != nil {
+		_, _ = h.auditLogger.LogWithToken(
+			audit.EventTokenDelegated,
+			verified.DelegationPath[max(0, len(verified.DelegationPath)-2)],
+			verified.AgentID,
+			"delegate",
+			verified.TokenID,
+			"success",
+			map[string]interface{}{
+				"capabilities": verified.Capabilities,
+				"chain_depth":  verified.ChainDepth,
+			},
+		)
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
-		"token":    encoded,
-		"token_id": tokenID,
+		"token":    req.DelegatedToken,
+		"token_id": verified.TokenID,
+		"verified": verified,
 	})
 }
 
@@ -175,6 +192,7 @@ type RevokeTokenRequest struct {
 }
 
 // RevokeToken handles POST /api/v1/tokens/revoke
+// Minor fix: use r.Context() instead of context.Background() for proper cancellation.
 func (h *TokenHandlers) RevokeToken(w http.ResponseWriter, r *http.Request) {
 	var req RevokeTokenRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -187,7 +205,7 @@ func (h *TokenHandlers) RevokeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.revocationReg.RevokeToken(context.Background(), req.TokenID, req.Reason); err != nil {
+	if err := h.revocationReg.RevokeToken(r.Context(), req.TokenID, req.Reason); err != nil {
 		writeProblem(w, http.StatusInternalServerError, "https://agentity.dev/errors/internal", "Internal Error", err.Error())
 		return
 	}
@@ -200,9 +218,7 @@ func (h *TokenHandlers) RevokeToken(w http.ResponseWriter, r *http.Request) {
 			"revoke",
 			req.TokenID,
 			"success",
-			map[string]interface{}{
-				"reason": req.Reason,
-			},
+			map[string]interface{}{"reason": req.Reason},
 		)
 	}
 
@@ -210,7 +226,6 @@ func (h *TokenHandlers) RevokeToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetChain handles GET /api/v1/tokens/{id}/chain
-// Note: for simplicity, this endpoint expects the full encoded token as a query parameter.
 func (h *TokenHandlers) GetChain(w http.ResponseWriter, r *http.Request) {
 	encodedToken := r.URL.Query().Get("token")
 	if encodedToken == "" {
@@ -225,4 +240,11 @@ func (h *TokenHandlers) GetChain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, chain)
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

@@ -35,7 +35,7 @@ func New(handler http.Handler, cfg config.ServerConfig, logger zerolog.Logger) *
 
 	if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
 		httpServer.TLSConfig = &tls.Config{
-			MinVersion: tls.VersionTLS12,
+			MinVersion: tls.VersionTLS13,
 		}
 	}
 

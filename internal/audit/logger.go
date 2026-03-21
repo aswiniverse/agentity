@@ -11,6 +11,10 @@ import (
 	"github.com/google/uuid"
 )
 
+// maxEntries caps the in-memory audit log to prevent unbounded memory growth.
+// When the cap is reached, the oldest 10% of entries are dropped.
+const maxEntries = 10_000
+
 // AuditEventType classifies audit events.
 type AuditEventType string
 
@@ -51,7 +55,7 @@ type AuditFilter struct {
 
 // Logger records and signs audit entries.
 type Logger struct {
-	mu         sync.Mutex
+	mu         sync.RWMutex
 	entries    []AuditEntry
 	signingKey ed25519.PrivateKey
 }
@@ -59,7 +63,7 @@ type Logger struct {
 // NewLogger creates a new audit logger with the given signing key.
 func NewLogger(signingKey ed25519.PrivateKey) *Logger {
 	return &Logger{
-		entries:    make([]AuditEntry, 0),
+		entries:    make([]AuditEntry, 0, 256),
 		signingKey: signingKey,
 	}
 }
@@ -76,18 +80,7 @@ func (l *Logger) Log(eventType AuditEventType, actorID, targetID, action, outcom
 		Metadata:  metadata,
 		Timestamp: time.Now().UTC(),
 	}
-
-	sig, err := l.signEntry(&entry)
-	if err != nil {
-		return nil, fmt.Errorf("sign audit entry: %w", err)
-	}
-	entry.Signature = sig
-
-	l.mu.Lock()
-	l.entries = append(l.entries, entry)
-	l.mu.Unlock()
-
-	return &entry, nil
+	return l.append(entry)
 }
 
 // LogWithToken records an audit entry that references a specific token.
@@ -103,18 +96,7 @@ func (l *Logger) LogWithToken(eventType AuditEventType, actorID, targetID, actio
 		Metadata:  metadata,
 		Timestamp: time.Now().UTC(),
 	}
-
-	sig, err := l.signEntry(&entry)
-	if err != nil {
-		return nil, fmt.Errorf("sign audit entry: %w", err)
-	}
-	entry.Signature = sig
-
-	l.mu.Lock()
-	l.entries = append(l.entries, entry)
-	l.mu.Unlock()
-
-	return &entry, nil
+	return l.append(entry)
 }
 
 // LogDenied records an access denied event with a reason.
@@ -130,7 +112,10 @@ func (l *Logger) LogDenied(actorID, targetID, action, reason string, metadata ma
 		Metadata:  metadata,
 		Timestamp: time.Now().UTC(),
 	}
+	return l.append(entry)
+}
 
+func (l *Logger) append(entry AuditEntry) (*AuditEntry, error) {
 	sig, err := l.signEntry(&entry)
 	if err != nil {
 		return nil, fmt.Errorf("sign audit entry: %w", err)
@@ -138,16 +123,21 @@ func (l *Logger) LogDenied(actorID, targetID, action, reason string, metadata ma
 	entry.Signature = sig
 
 	l.mu.Lock()
-	l.entries = append(l.entries, entry)
-	l.mu.Unlock()
+	defer l.mu.Unlock()
 
+	// Evict oldest 10% when cap is reached to prevent unbounded growth.
+	if len(l.entries) >= maxEntries {
+		evict := maxEntries / 10
+		l.entries = l.entries[evict:]
+	}
+	l.entries = append(l.entries, entry)
 	return &entry, nil
 }
 
 // List returns audit entries matching the given filter.
 func (l *Logger) List(filter AuditFilter) []AuditEntry {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 
 	if filter.Limit <= 0 {
 		filter.Limit = 50
@@ -170,7 +160,6 @@ func (l *Logger) List(filter AuditFilter) []AuditEntry {
 		filtered = append(filtered, e)
 	}
 
-	// Apply offset and limit.
 	if filter.Offset >= len(filtered) {
 		return nil
 	}
@@ -183,13 +172,12 @@ func (l *Logger) List(filter AuditFilter) []AuditEntry {
 
 // Count returns the total number of audit entries.
 func (l *Logger) Count() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	return len(l.entries)
 }
 
 func (l *Logger) signEntry(entry *AuditEntry) (string, error) {
-	// Create a copy without signature for signing.
 	toSign := *entry
 	toSign.Signature = ""
 	data, err := json.Marshal(toSign)

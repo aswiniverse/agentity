@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
 	"strings"
 	"sync"
@@ -10,6 +11,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 )
+
+// maxRequestBodyBytes limits request bodies to 1 MB to prevent DoS.
+const maxRequestBodyBytes = 1 << 20 // 1 MB
 
 type contextKey string
 
@@ -38,6 +42,14 @@ func GetRequestID(ctx context.Context) string {
 	return ""
 }
 
+// MaxBytesMiddleware limits request body size to prevent DoS via large payloads.
+func MaxBytesMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		next.ServeHTTP(w, r)
+	})
+}
+
 // LoggingMiddleware logs request details using zerolog.
 func LoggingMiddleware(logger zerolog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -61,7 +73,7 @@ func LoggingMiddleware(logger zerolog.Logger) func(http.Handler) http.Handler {
 
 type statusWriter struct {
 	http.ResponseWriter
-	status int
+	status  int
 	written bool
 }
 
@@ -75,34 +87,50 @@ func (w *statusWriter) WriteHeader(status int) {
 
 func (w *statusWriter) Write(b []byte) (int, error) {
 	if !w.written {
+		w.status = http.StatusOK
 		w.written = true
 	}
 	return w.ResponseWriter.Write(b)
 }
 
-// AdminAuthMiddleware validates the admin API key from the Authorization header.
+// AdminAuthMiddleware validates the admin API key using a constant-time comparison
+// to prevent timing-based side-channel attacks.
+// C1 fix: use crypto/subtle.ConstantTimeCompare instead of string equality.
+// C2 fix: refuse all requests when adminKey is empty (misconfiguration guard).
 func AdminAuthMiddleware(adminKey string) func(http.Handler) http.Handler {
+	keyBytes := []byte(adminKey)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// C2: never allow through if no key is configured — misconfiguration
+			// in production (forgotten env var) must not silently disable auth.
 			if adminKey == "" {
-				next.ServeHTTP(w, r)
+				writeProblem(w, http.StatusServiceUnavailable,
+					"https://agentity.dev/errors/misconfigured",
+					"Server Misconfigured",
+					"Admin API key is not set. Configure AGENTITY_AUTH_ADMIN_API_KEY.")
 				return
 			}
 
 			auth := r.Header.Get("Authorization")
 			if auth == "" {
-				writeProblem(w, http.StatusUnauthorized, "https://agentity.dev/errors/unauthorized", "Unauthorized", "Missing Authorization header")
+				writeProblem(w, http.StatusUnauthorized,
+					"https://agentity.dev/errors/unauthorized",
+					"Unauthorized",
+					"Missing Authorization header")
 				return
 			}
 
-			// Support "Bearer <key>" format.
 			key := auth
 			if strings.HasPrefix(auth, "Bearer ") {
 				key = strings.TrimPrefix(auth, "Bearer ")
 			}
 
-			if key != adminKey {
-				writeProblem(w, http.StatusForbidden, "https://agentity.dev/errors/forbidden", "Forbidden", "Invalid API key")
+			// C1: constant-time comparison to prevent timing attacks.
+			if subtle.ConstantTimeCompare([]byte(key), keyBytes) != 1 {
+				writeProblem(w, http.StatusForbidden,
+					"https://agentity.dev/errors/forbidden",
+					"Forbidden",
+					"Invalid API key")
 				return
 			}
 
@@ -111,42 +139,97 @@ func AdminAuthMiddleware(adminKey string) func(http.Handler) http.Handler {
 	}
 }
 
-// CORSMiddleware adds CORS headers.
-func CORSMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type, X-Request-ID")
-		w.Header().Set("Access-Control-Max-Age", "3600")
-
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
+// CORSMiddleware adds CORS headers. In production, set AllowedOrigins explicitly.
+func CORSMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
+	originSet := make(map[string]struct{}, len(allowedOrigins))
+	wildcard := false
+	for _, o := range allowedOrigins {
+		if o == "*" {
+			wildcard = true
 		}
+		originSet[o] = struct{}{}
+	}
 
-		next.ServeHTTP(w, r)
-	})
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+			allowed := wildcard
+			if !allowed {
+				_, allowed = originSet[origin]
+			}
+
+			if allowed && origin != "" {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Vary", "Origin")
+			} else if wildcard {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			}
+
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type, X-Request-ID")
+			w.Header().Set("Access-Control-Max-Age", "3600")
+
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
-// RateLimiter implements a simple token bucket rate limiter per IP.
+// RateLimiter implements a token bucket rate limiter per IP with bounded memory.
+// M2 fix: a background goroutine periodically evicts stale buckets to prevent OOM.
 type RateLimiter struct {
-	mu      sync.Mutex
-	buckets map[string]*bucket
-	rate    int           // tokens per interval
+	mu       sync.Mutex
+	buckets  map[string]*bucket
+	rate     int
 	interval time.Duration
+	done     chan struct{}
 }
 
 type bucket struct {
-	tokens    int
+	tokens     int
 	lastRefill time.Time
+	lastSeen   time.Time
 }
 
 // NewRateLimiter creates a rate limiter allowing `rate` requests per `interval`.
+// A cleanup goroutine evicts IPs that haven't been seen for 5× the interval.
 func NewRateLimiter(rate int, interval time.Duration) *RateLimiter {
-	return &RateLimiter{
+	rl := &RateLimiter{
 		buckets:  make(map[string]*bucket),
 		rate:     rate,
 		interval: interval,
+		done:     make(chan struct{}),
+	}
+	go rl.cleanup()
+	return rl
+}
+
+// Stop terminates the background cleanup goroutine.
+func (rl *RateLimiter) Stop() {
+	close(rl.done)
+}
+
+func (rl *RateLimiter) cleanup() {
+	ticker := time.NewTicker(rl.interval * 5)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-rl.done:
+			return
+		case <-ticker.C:
+			threshold := time.Now().Add(-5 * rl.interval)
+			rl.mu.Lock()
+			for ip, b := range rl.buckets {
+				if b.lastSeen.Before(threshold) {
+					delete(rl.buckets, ip)
+				}
+			}
+			rl.mu.Unlock()
+		}
 	}
 }
 
@@ -158,15 +241,17 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 			ip = ip[:idx]
 		}
 
+		now := time.Now()
 		rl.mu.Lock()
 		b, exists := rl.buckets[ip]
 		if !exists {
-			b = &bucket{tokens: rl.rate, lastRefill: time.Now()}
+			b = &bucket{tokens: rl.rate, lastRefill: now, lastSeen: now}
 			rl.buckets[ip] = b
 		}
 
-		// Refill tokens.
-		elapsed := time.Since(b.lastRefill)
+		b.lastSeen = now
+
+		elapsed := now.Sub(b.lastRefill)
 		if elapsed >= rl.interval {
 			periods := int(elapsed / rl.interval)
 			b.tokens += periods * rl.rate
@@ -178,7 +263,10 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 
 		if b.tokens <= 0 {
 			rl.mu.Unlock()
-			writeProblem(w, http.StatusTooManyRequests, "https://agentity.dev/errors/rate-limited", "Rate Limited", "Too many requests. Please try again later.")
+			writeProblem(w, http.StatusTooManyRequests,
+				"https://agentity.dev/errors/rate-limited",
+				"Rate Limited",
+				"Too many requests. Please try again later.")
 			return
 		}
 

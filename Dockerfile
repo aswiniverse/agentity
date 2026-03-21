@@ -27,4 +27,5 @@ USER agentity
 EXPOSE 8080
 
 ENTRYPOINT ["agentity"]
-CMD ["--dev"]
+# Production: supply AGENTITY_AUTH_ADMIN_API_KEY + AGENTITY_CRYPTO_ROOT_KEY_FILE via env/config.
+# Use --dev only for local development. Never run --dev in production.

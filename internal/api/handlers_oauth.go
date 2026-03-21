@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/agentity/agentity/internal/delegation"
+	"github.com/agentity/agentity/internal/revocation"
 	"github.com/agentity/agentity/pkg/token"
 	"github.com/golang-jwt/jwt/v5"
 
@@ -16,13 +17,15 @@ import (
 type OAuthHandlers struct {
 	rootKeyStore     *agcrypto.RootKeyStore
 	delegationEngine *delegation.Engine
+	revocationReg    *revocation.Registry
 }
 
 // NewOAuthHandlers creates new OAuth handlers.
-func NewOAuthHandlers(rootKeyStore *agcrypto.RootKeyStore, engine *delegation.Engine) *OAuthHandlers {
+func NewOAuthHandlers(rootKeyStore *agcrypto.RootKeyStore, engine *delegation.Engine, rev *revocation.Registry) *OAuthHandlers {
 	return &OAuthHandlers{
 		rootKeyStore:     rootKeyStore,
 		delegationEngine: engine,
+		revocationReg:    rev,
 	}
 }
 
@@ -34,9 +37,7 @@ func (h *OAuthHandlers) TokenEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	grantType := r.FormValue("grant_type")
-
-	switch grantType {
+	switch r.FormValue("grant_type") {
 	case "urn:ietf:params:oauth:grant-type:token-exchange":
 		h.handleTokenExchange(w, r)
 	default:
@@ -57,14 +58,12 @@ func (h *OAuthHandlers) handleTokenExchange(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Verify the ACT token.
 	verified, err := h.delegationEngine.Verify(r.Context(), subjectToken)
 	if err != nil {
 		writeOAuthError(w, http.StatusUnauthorized, "invalid_grant", "Token verification failed: "+err.Error())
 		return
 	}
 
-	// Issue a JWT access token for OAuth2 compatibility.
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"iss":   "agentity://server",
@@ -88,9 +87,9 @@ func (h *OAuthHandlers) handleTokenExchange(w http.ResponseWriter, r *http.Reque
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"access_token":  signed,
-		"token_type":    "Bearer",
-		"expires_in":    verified.ExpiresAt - now.Unix(),
+		"access_token":      signed,
+		"token_type":        "Bearer",
+		"expires_in":        verified.ExpiresAt - now.Unix(),
 		"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
 	})
 }
@@ -108,7 +107,6 @@ func (h *OAuthHandlers) IntrospectEndpoint(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Try to verify as ACT token.
 	verified, err := h.delegationEngine.Verify(r.Context(), tok)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"active": false})
@@ -127,6 +125,7 @@ func (h *OAuthHandlers) IntrospectEndpoint(w http.ResponseWriter, r *http.Reques
 }
 
 // RevokeEndpoint handles POST /oauth/revoke (RFC 7009).
+// C3 fix: actually revokes the token instead of silently discarding it.
 func (h *OAuthHandlers) RevokeEndpoint(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "Failed to parse form data")
@@ -140,16 +139,19 @@ func (h *OAuthHandlers) RevokeEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Decode the token to get its ID.
 	act, err := token.Decode(tok)
 	if err != nil {
-		// Per RFC 7009, return 200 even for invalid tokens.
+		// Per RFC 7009, return 200 for invalid/unknown tokens.
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	// Revoke in the delegation engine's revocation registry.
-	_ = act // Token ID available as act.TokenID - revocation handled via token handlers.
+	// C3 fix: actually revoke the token.
+	if err := h.revocationReg.RevokeToken(r.Context(), act.TokenID, "oauth-revoke"); err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "Failed to revoke token")
+		return
+	}
+
 	w.WriteHeader(http.StatusOK)
 }
 
