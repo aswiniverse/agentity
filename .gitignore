@@ -30,3 +30,6 @@ config.local.yaml
 # OS
 .DS_Store
 Thumbs.db
+
+# oh-my-claudecode plugin state
+.omc/
