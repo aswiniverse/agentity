@@ -7,17 +7,19 @@ import (
 
 	"github.com/agentity/agentity/internal/identity"
 	"github.com/agentity/agentity/internal/metrics"
+	"github.com/agentity/agentity/internal/revocation"
 	"github.com/go-chi/chi/v5"
 )
 
 // IdentityHandlers provides HTTP handlers for agent identity management.
 type IdentityHandlers struct {
 	service *identity.Service
+	revReg  *revocation.Registry
 }
 
 // NewIdentityHandlers creates new identity handlers.
-func NewIdentityHandlers(service *identity.Service) *IdentityHandlers {
-	return &IdentityHandlers{service: service}
+func NewIdentityHandlers(service *identity.Service, revReg *revocation.Registry) *IdentityHandlers {
+	return &IdentityHandlers{service: service, revReg: revReg}
 }
 
 // RegisterAgent handles POST /api/v1/agents
@@ -130,9 +132,27 @@ func (h *IdentityHandlers) RevokeAgent(w http.ResponseWriter, r *http.Request) {
 	// Body is optional; if not provided, cascade defaults to false.
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
+	// Collect agents to revoke before updating the store so we have their IDs.
+	// For cascade, get the full descendant list first.
+	toRevoke := []string{agentID}
+	if req.Cascade {
+		if descendants, err := h.service.ListDescendants(agentID); err == nil {
+			toRevoke = append(toRevoke, descendants...)
+		}
+	}
+
 	if err := h.service.RevokeAgent(agentID, req.Cascade); err != nil {
 		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/revoke-failed", "Revoke Failed", err.Error())
 		return
+	}
+
+	// Write every revoked agent ID to the revocation registry so that
+	// token verification (which checks the registry, not the store) correctly
+	// rejects tokens belonging to revoked agents across all instances.
+	if h.revReg != nil {
+		for _, aid := range toRevoke {
+			_ = h.revReg.RevokeAgent(r.Context(), aid, "agent-revoked", req.Cascade)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})

@@ -99,7 +99,7 @@ func NewRouter(cfg RouterConfig) *chi.Mux {
 		r.Use(AdminAuthMiddleware(cfg.AdminAPIKey))
 
 		// Identity endpoints.
-		idHandlers := NewIdentityHandlers(cfg.IdentityService)
+		idHandlers := NewIdentityHandlers(cfg.IdentityService, cfg.RevocationReg)
 		r.Post("/agents", idHandlers.RegisterAgent)
 		r.Get("/agents", idHandlers.ListAgents)
 		r.Get("/agents/{id}", idHandlers.GetAgent)

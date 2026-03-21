@@ -189,6 +189,25 @@ func (s *Service) RotateKey(id string) (*AgentIdentity, string, error) {
 	return agent, privKeyB64, nil
 }
 
+// ListDescendants returns all descendant agent IDs of the given agent (BFS, not including itself).
+func (s *Service) ListDescendants(parentID string) ([]string, error) {
+	var result []string
+	queue := []string{parentID}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		children, err := s.store.GetChildAgents(cur)
+		if err != nil {
+			return nil, err
+		}
+		for _, child := range children {
+			result = append(result, child.ID)
+			queue = append(queue, child.ID)
+		}
+	}
+	return result, nil
+}
+
 // GetDelegationTree builds the delegation tree starting from the given root agent ID.
 func (s *Service) GetDelegationTree(rootID string) (*DelegationTree, error) {
 	agent, err := s.store.GetAgent(rootID)
