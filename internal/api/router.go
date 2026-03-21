@@ -13,6 +13,7 @@ import (
 	agcrypto "github.com/agentity/agentity/pkg/crypto"
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 )
 
@@ -52,6 +53,14 @@ func NewRouter(cfg RouterConfig) *chi.Mux {
 	// Rate limiting: 100 requests per second per IP.
 	limiter := NewRateLimiter(100, time.Second)
 	r.Use(limiter.Middleware)
+
+	// Prometheus metrics endpoint.
+	r.Handle("/metrics", promhttp.Handler())
+
+	// OpenAPI spec (no auth required).
+	r.Get("/api/v1/openapi.json", OpenAPISpec)
+	// Swagger UI — redirects to petstore CDN pre-loaded with the local spec.
+	r.Get("/docs", SwaggerUI)
 
 	// Liveness: always returns 200 (process is running).
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -108,6 +117,7 @@ func NewRouter(cfg RouterConfig) *chi.Mux {
 			cfg.RevocationReg,
 			cfg.AuditLogger,
 			cfg.IdentityService,
+			cfg.PolicyEngine,
 		)
 		r.Post("/tokens/issue", tokenHandlers.IssueToken)
 		r.Post("/tokens/delegate", tokenHandlers.SubmitDelegatedToken)

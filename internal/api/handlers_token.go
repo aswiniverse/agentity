@@ -3,10 +3,13 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/agentity/agentity/internal/audit"
 	"github.com/agentity/agentity/internal/delegation"
 	"github.com/agentity/agentity/internal/identity"
+	"github.com/agentity/agentity/internal/metrics"
+	"github.com/agentity/agentity/internal/policy"
 	"github.com/agentity/agentity/internal/revocation"
 	agcrypto "github.com/agentity/agentity/pkg/crypto"
 	"github.com/agentity/agentity/pkg/token"
@@ -19,6 +22,8 @@ type TokenHandlers struct {
 	revocationReg    *revocation.Registry
 	auditLogger      *audit.Logger
 	identityService  *identity.Service
+	policyEngine     *policy.Engine
+	agentLimiter     *AgentRateLimiter
 }
 
 // NewTokenHandlers creates new token handlers.
@@ -28,6 +33,7 @@ func NewTokenHandlers(
 	rev *revocation.Registry,
 	auditLog *audit.Logger,
 	idService *identity.Service,
+	policyEngine *policy.Engine,
 ) *TokenHandlers {
 	return &TokenHandlers{
 		rootKeyStore:     rootKeyStore,
@@ -35,6 +41,9 @@ func NewTokenHandlers(
 		revocationReg:    rev,
 		auditLogger:      auditLog,
 		identityService:  idService,
+		policyEngine:     policyEngine,
+		// 20 token operations per second per agent.
+		agentLimiter: NewAgentRateLimiter(20, time.Second),
 	}
 }
 
@@ -63,6 +72,12 @@ func (h *TokenHandlers) IssueToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-agent rate limit check.
+	if !h.agentLimiter.Allow(req.AgentID) {
+		writeProblem(w, http.StatusTooManyRequests, "https://agentity.dev/errors/rate-limited", "Rate Limited", "Too many requests for this agent. Please slow down.")
+		return
+	}
+
 	// M9: verify agent exists and is active before issuing a token for it.
 	agent, err := h.identityService.GetAgent(req.AgentID)
 	if err != nil {
@@ -74,11 +89,38 @@ func (h *TokenHandlers) IssueToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Evaluate policies before issuing.
+	if h.policyEngine != nil {
+		allowed, policyName, err := h.policyEngine.Evaluate(r.Context(), policy.PolicyInput{
+			AgentID:      req.AgentID,
+			AgentModel:   agent.Fingerprint.Model,
+			Capabilities: req.Capabilities,
+			Action:       "issue",
+			ExpiresAt:    req.Conditions.ExpiresAt,
+		})
+		if err != nil {
+			writeProblem(w, http.StatusInternalServerError, "https://agentity.dev/errors/internal", "Internal Error", "Policy evaluation failed: "+err.Error())
+			return
+		}
+		if !allowed {
+			metrics.PolicyDenials.Inc()
+			detail := "Denied by policy"
+			if policyName != "" {
+				detail = "Denied by policy: " + policyName
+			}
+			writeProblem(w, http.StatusForbidden, "https://agentity.dev/errors/policy-denied", "Policy Denied", detail)
+			return
+		}
+	}
+
+	issueStart := time.Now()
 	act, err := token.IssueRootToken(req.AgentID, req.Capabilities, req.Conditions, h.rootKeyStore.PrivateKey())
+	metrics.IssuanceDuration.Observe(time.Since(issueStart).Seconds())
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/token-issue-failed", "Token Issue Failed", err.Error())
 		return
 	}
+	metrics.TokensIssued.Inc()
 
 	encoded, err := token.Encode(act)
 	if err != nil {
@@ -132,9 +174,11 @@ func (h *TokenHandlers) SubmitDelegatedToken(w http.ResponseWriter, r *http.Requ
 	// attenuation, expiry, revocation.
 	verified, err := h.delegationEngine.Verify(r.Context(), req.DelegatedToken)
 	if err != nil {
+		metrics.TokensRejected.Inc()
 		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/delegation-invalid", "Delegation Invalid", err.Error())
 		return
 	}
+	metrics.TokensDelegated.Inc()
 
 	if h.auditLogger != nil {
 		_, _ = h.auditLogger.LogWithToken(
@@ -176,11 +220,44 @@ func (h *TokenHandlers) VerifyToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	verifyStart := time.Now()
 	verified, err := h.delegationEngine.Verify(r.Context(), req.Token)
+	metrics.VerificationDuration.Observe(time.Since(verifyStart).Seconds())
 	if err != nil {
+		metrics.TokensRejected.Inc()
 		writeProblem(w, http.StatusUnauthorized, "https://agentity.dev/errors/token-invalid", "Token Invalid", err.Error())
 		return
 	}
+
+	// Per-agent rate limit for verification.
+	if !h.agentLimiter.Allow(verified.AgentID) {
+		writeProblem(w, http.StatusTooManyRequests, "https://agentity.dev/errors/rate-limited", "Rate Limited", "Too many verification requests for this agent. Please slow down.")
+		return
+	}
+
+	// Evaluate policies on the verified token.
+	if h.policyEngine != nil {
+		allowed, policyName, err := h.policyEngine.Evaluate(r.Context(), policy.PolicyInput{
+			AgentID:      verified.AgentID,
+			Capabilities: verified.Capabilities,
+			ChainDepth:   verified.ChainDepth,
+			Action:       "verify",
+		})
+		if err != nil {
+			writeProblem(w, http.StatusInternalServerError, "https://agentity.dev/errors/internal", "Internal Error", "Policy evaluation failed: "+err.Error())
+			return
+		}
+		if !allowed {
+			metrics.PolicyDenials.Inc()
+			detail := "Denied by policy"
+			if policyName != "" {
+				detail = "Denied by policy: " + policyName
+			}
+			writeProblem(w, http.StatusForbidden, "https://agentity.dev/errors/policy-denied", "Policy Denied", detail)
+			return
+		}
+	}
+	metrics.TokensVerified.Inc()
 
 	writeJSON(w, http.StatusOK, verified)
 }
@@ -209,6 +286,7 @@ func (h *TokenHandlers) RevokeToken(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, "https://agentity.dev/errors/internal", "Internal Error", err.Error())
 		return
 	}
+	metrics.TokensRevoked.Inc()
 
 	if h.auditLogger != nil {
 		_, _ = h.auditLogger.LogWithToken(

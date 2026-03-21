@@ -126,19 +126,36 @@ func (s *Service) RevokeAgent(id string, cascade bool) error {
 	return nil
 }
 
+// maxRevokeDepth caps cascade revocation to prevent stack overflows and
+// runaway traversals in pathological delegation trees.
+const maxRevokeDepth = 100
+
+// revokeChildren iteratively revokes all descendants of parentID using BFS.
 func (s *Service) revokeChildren(parentID string) error {
-	children, err := s.store.GetChildAgents(parentID)
-	if err != nil {
-		return err
+	type item struct {
+		id    string
+		depth int
 	}
-	for _, child := range children {
-		child.Status = AgentStatusRevoked
-		child.UpdatedAt = time.Now().UTC()
-		if err := s.store.UpdateAgent(child); err != nil {
+	queue := []item{{id: parentID, depth: 0}}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+
+		if cur.depth >= maxRevokeDepth {
+			return fmt.Errorf("cascade revocation exceeded maximum depth (%d) at agent %s", maxRevokeDepth, cur.id)
+		}
+
+		children, err := s.store.GetChildAgents(cur.id)
+		if err != nil {
 			return err
 		}
-		if err := s.revokeChildren(child.ID); err != nil {
-			return err
+		for _, child := range children {
+			child.Status = AgentStatusRevoked
+			child.UpdatedAt = time.Now().UTC()
+			if err := s.store.UpdateAgent(child); err != nil {
+				return err
+			}
+			queue = append(queue, item{id: child.ID, depth: cur.depth + 1})
 		}
 	}
 	return nil

@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/agentity/agentity/internal/identity"
+	"github.com/agentity/agentity/internal/metrics"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -32,6 +33,7 @@ func (h *IdentityHandlers) RegisterAgent(w http.ResponseWriter, r *http.Request)
 		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/registration-failed", "Registration Failed", err.Error())
 		return
 	}
+	metrics.AgentsRegistered.Inc()
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"agent":       agent,

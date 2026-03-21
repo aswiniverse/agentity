@@ -1,0 +1,136 @@
+package audit_test
+
+import (
+	"testing"
+
+	"github.com/agentity/agentity/internal/audit"
+	agcrypto "github.com/agentity/agentity/pkg/crypto"
+)
+
+func newLogger(t *testing.T) *audit.Logger {
+	t.Helper()
+	ks, err := agcrypto.NewRootKeyStore()
+	if err != nil {
+		t.Fatalf("create root key store: %v", err)
+	}
+	return audit.NewLogger(ks.PrivateKey())
+}
+
+func TestAuditLogger_Log(t *testing.T) {
+	l := newLogger(t)
+	entry, err := l.Log(
+		audit.EventTokenIssued,
+		"agentity://server",
+		"agent://test",
+		"issue",
+		"success",
+		map[string]interface{}{"caps": []string{"read"}},
+	)
+	if err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if entry == nil {
+		t.Fatal("expected non-nil entry")
+	}
+	if entry.ID == "" {
+		t.Fatal("expected non-empty entry ID")
+	}
+	if entry.Type != audit.EventTokenIssued {
+		t.Fatalf("expected type=%s, got %s", audit.EventTokenIssued, entry.Type)
+	}
+	if entry.Signature == "" {
+		t.Fatal("expected non-empty signature")
+	}
+}
+
+func TestAuditLogger_LogWithToken(t *testing.T) {
+	l := newLogger(t)
+	entry, err := l.LogWithToken(
+		audit.EventTokenDelegated,
+		"agent://parent",
+		"agent://child",
+		"delegate",
+		"token-id-123",
+		"success",
+		map[string]interface{}{"depth": 2},
+	)
+	if err != nil {
+		t.Fatalf("LogWithToken: %v", err)
+	}
+	if entry.TokenID != "token-id-123" {
+		t.Fatalf("expected token_id=token-id-123, got %s", entry.TokenID)
+	}
+}
+
+func TestAuditLogger_Count(t *testing.T) {
+	l := newLogger(t)
+	if l.Count() != 0 {
+		t.Fatal("expected count=0 on empty logger")
+	}
+	l.Log(audit.EventTokenIssued, "a", "b", "issue", "success", nil)
+	l.Log(audit.EventTokenVerified, "a", "b", "verify", "success", nil)
+	if l.Count() != 2 {
+		t.Fatalf("expected count=2, got %d", l.Count())
+	}
+}
+
+func TestAuditLogger_List(t *testing.T) {
+	l := newLogger(t)
+	for i := 0; i < 5; i++ {
+		l.Log(audit.EventTokenIssued, "a", "b", "issue", "success", nil)
+	}
+	entries := l.List(audit.AuditFilter{Limit: 3})
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries with limit=3, got %d", len(entries))
+	}
+	allEntries := l.List(audit.AuditFilter{Limit: 100})
+	if len(allEntries) != 5 {
+		t.Fatalf("expected all 5 entries, got %d", len(allEntries))
+	}
+}
+
+func TestAuditLogger_ListOffset(t *testing.T) {
+	l := newLogger(t)
+	for i := 0; i < 5; i++ {
+		l.Log(audit.EventTokenIssued, "a", "b", "issue", "success", nil)
+	}
+	entries := l.List(audit.AuditFilter{Offset: 3, Limit: 10})
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries with offset=3, got %d", len(entries))
+	}
+}
+
+func TestAuditLogger_SignatureNonEmpty(t *testing.T) {
+	l := newLogger(t)
+	entry, _ := l.Log(
+		audit.EventAccessDenied,
+		"agent://x",
+		"agent://y",
+		"verify",
+		"denied",
+		nil,
+	)
+	if entry.Signature == "" {
+		t.Fatal("expected non-empty signature")
+	}
+	if len(entry.Signature) < 10 {
+		t.Fatalf("signature too short: %s", entry.Signature)
+	}
+}
+
+func TestAuditLogger_ConcurrentWrites(t *testing.T) {
+	l := newLogger(t)
+	done := make(chan struct{})
+	for i := 0; i < 20; i++ {
+		go func() {
+			l.Log(audit.EventTokenIssued, "a", "b", "issue", "success", nil)
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < 20; i++ {
+		<-done
+	}
+	if l.Count() != 20 {
+		t.Fatalf("expected 20 entries after concurrent writes, got %d", l.Count())
+	}
+}

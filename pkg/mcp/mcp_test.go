@@ -1,0 +1,408 @@
+package mcp_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/agentity/agentity/internal/audit"
+	"github.com/agentity/agentity/internal/delegation"
+	"github.com/agentity/agentity/internal/identity"
+	"github.com/agentity/agentity/internal/revocation"
+	"github.com/agentity/agentity/internal/store"
+	agcrypto "github.com/agentity/agentity/pkg/crypto"
+	"github.com/agentity/agentity/pkg/mcp"
+	"github.com/agentity/agentity/pkg/token"
+)
+
+// helpers
+
+func newEngine(t *testing.T) (*delegation.Engine, *agcrypto.RootKeyStore) {
+	t.Helper()
+	ks, err := agcrypto.NewRootKeyStore()
+	if err != nil {
+		t.Fatalf("NewRootKeyStore: %v", err)
+	}
+	agentStore := store.NewMemoryStore()
+	revReg := revocation.NewRegistry(nil)
+	auditLog := audit.NewLogger(ks.PrivateKey())
+	keyResolver := delegation.NewKeyResolver(ks, agentStore)
+	eng := delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
+	return eng, ks
+}
+
+func registerAndIssueToken(t *testing.T, ks *agcrypto.RootKeyStore, agentStore identity.Store, caps []string) (string, *identity.AgentIdentity) {
+	t.Helper()
+	kp, err := agcrypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	agent := &identity.AgentIdentity{
+		ID:        "agent://mcp-test",
+		Name:      "mcp-test",
+		PublicKey: agcrypto.EncodePublicKeyBase64(kp.PublicKey),
+		KeyID:     kp.KeyID,
+		Status:    identity.AgentStatusActive,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := agentStore.CreateAgent(agent); err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	act, err := token.IssueRootToken(agent.ID, caps, token.BlockConditions{
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	}, ks.PrivateKey())
+	if err != nil {
+		t.Fatalf("IssueRootToken: %v", err)
+	}
+	encoded, err := token.Encode(act)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	return encoded, agent
+}
+
+// ToolCapabilityMap tests
+
+func TestToolCapabilityMap_DefaultMapping(t *testing.T) {
+	m := mcp.NewToolCapabilityMap()
+	// Without explicit mapping, tool name == capability.
+	if got := m.Required("read_file"); got != "read_file" {
+		t.Fatalf("expected 'read_file', got %s", got)
+	}
+	if got := m.Required("web_search"); got != "web_search" {
+		t.Fatalf("expected 'web_search', got %s", got)
+	}
+}
+
+func TestToolCapabilityMap_ExplicitMapping(t *testing.T) {
+	m := mcp.NewToolCapabilityMap().
+		Map("fs.read", "read_file").
+		Map("fs.write", "write_file")
+
+	if got := m.Required("fs.read"); got != "read_file" {
+		t.Fatalf("expected 'read_file', got %s", got)
+	}
+	if got := m.Required("fs.write"); got != "write_file" {
+		t.Fatalf("expected 'write_file', got %s", got)
+	}
+	// Unmapped tool still falls back to identity.
+	if got := m.Required("code_exec"); got != "code_exec" {
+		t.Fatalf("expected 'code_exec', got %s", got)
+	}
+}
+
+func TestToolCapabilityMap_Chaining(t *testing.T) {
+	m := mcp.NewToolCapabilityMap().
+		Map("a", "cap-a").
+		Map("b", "cap-b").
+		Map("c", "cap-c")
+
+	for tool, want := range map[string]string{"a": "cap-a", "b": "cap-b", "c": "cap-c"} {
+		if got := m.Required(tool); got != want {
+			t.Fatalf("tool=%s: expected %s, got %s", tool, want, got)
+		}
+	}
+}
+
+// VerifyToolCall tests
+
+func TestVerifyToolCall_ValidToken(t *testing.T) {
+	eng, ks := newEngine(t)
+	agentStore := store.NewMemoryStore()
+
+	// Re-create engine with the same store for agent lookup.
+	ks2 := ks
+	revReg := revocation.NewRegistry(nil)
+	auditLog := audit.NewLogger(ks2.PrivateKey())
+	keyResolver := delegation.NewKeyResolver(ks2, agentStore)
+	eng = delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
+
+	encodedToken, _ := registerAndIssueToken(t, ks, agentStore, []string{"read_file", "write_file"})
+
+	capMap := mcp.NewToolCapabilityMap()
+	result, err := mcp.VerifyToolCall(context.Background(), eng, encodedToken, "read_file", capMap)
+	if err != nil {
+		t.Fatalf("VerifyToolCall: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil AuthResult")
+	}
+	if result.AgentID != "agent://mcp-test" {
+		t.Fatalf("expected AgentID=agent://mcp-test, got %s", result.AgentID)
+	}
+}
+
+func TestVerifyToolCall_EmptyToken(t *testing.T) {
+	eng, _ := newEngine(t)
+	_, err := mcp.VerifyToolCall(context.Background(), eng, "", "read_file", mcp.NewToolCapabilityMap())
+	if err == nil {
+		t.Fatal("expected error for empty token")
+	}
+}
+
+func TestVerifyToolCall_MissingCapability(t *testing.T) {
+	eng, ks := newEngine(t)
+	agentStore := store.NewMemoryStore()
+	revReg := revocation.NewRegistry(nil)
+	auditLog := audit.NewLogger(ks.PrivateKey())
+	keyResolver := delegation.NewKeyResolver(ks, agentStore)
+	eng = delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
+
+	// Token only has "read_file".
+	encodedToken, _ := registerAndIssueToken(t, ks, agentStore, []string{"read_file"})
+
+	capMap := mcp.NewToolCapabilityMap()
+	_, err := mcp.VerifyToolCall(context.Background(), eng, encodedToken, "write_file", capMap)
+	if err == nil {
+		t.Fatal("expected error: token lacks required capability")
+	}
+}
+
+func TestVerifyToolCall_InvalidToken(t *testing.T) {
+	eng, _ := newEngine(t)
+	_, err := mcp.VerifyToolCall(context.Background(), eng, "not-a-valid-token", "read_file", mcp.NewToolCapabilityMap())
+	if err == nil {
+		t.Fatal("expected error for invalid token")
+	}
+}
+
+func TestVerifyToolCall_ExplicitCapabilityMapping(t *testing.T) {
+	eng, ks := newEngine(t)
+	agentStore := store.NewMemoryStore()
+	revReg := revocation.NewRegistry(nil)
+	auditLog := audit.NewLogger(ks.PrivateKey())
+	keyResolver := delegation.NewKeyResolver(ks, agentStore)
+	eng = delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
+
+	// Token has "read_file" capability.
+	encodedToken, _ := registerAndIssueToken(t, ks, agentStore, []string{"read_file"})
+
+	// Map "fs.read" → "read_file".
+	capMap := mcp.NewToolCapabilityMap().Map("fs.read", "read_file")
+	result, err := mcp.VerifyToolCall(context.Background(), eng, encodedToken, "fs.read", capMap)
+	if err != nil {
+		t.Fatalf("VerifyToolCall with mapped capability: %v", err)
+	}
+	if result.AgentID == "" {
+		t.Fatal("expected non-empty AgentID")
+	}
+}
+
+// HTTP Middleware tests
+
+func newMiddlewareEngine(t *testing.T) (*delegation.Engine, *agcrypto.RootKeyStore, identity.Store) {
+	t.Helper()
+	ks, err := agcrypto.NewRootKeyStore()
+	if err != nil {
+		t.Fatalf("NewRootKeyStore: %v", err)
+	}
+	agentStore := store.NewMemoryStore()
+	revReg := revocation.NewRegistry(nil)
+	auditLog := audit.NewLogger(ks.PrivateKey())
+	keyResolver := delegation.NewKeyResolver(ks, agentStore)
+	eng := delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
+	return eng, ks, agentStore
+}
+
+func TestMCPMiddleware_MissingTokenReturns401(t *testing.T) {
+	eng, _, _ := newMiddlewareEngine(t)
+	m := mcp.NewMiddleware(eng, mcp.NewToolCapabilityMap())
+
+	handler := m.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	body, _ := json.Marshal(map[string]string{"tool": "read_file"})
+	req := httptest.NewRequest(http.MethodPost, "/mcp/call", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestMCPMiddleware_MissingToolReturns400(t *testing.T) {
+	eng, _, _ := newMiddlewareEngine(t)
+	m := mcp.NewMiddleware(eng, mcp.NewToolCapabilityMap())
+
+	handler := m.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	body, _ := json.Marshal(map[string]string{"token": "some-token"})
+	req := httptest.NewRequest(http.MethodPost, "/mcp/call", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestMCPMiddleware_ValidTokenPassesThrough(t *testing.T) {
+	eng, ks, agentStore := newMiddlewareEngine(t)
+
+	encodedToken, agent := registerAndIssueToken(t, ks, agentStore, []string{"read_file"})
+
+	m := mcp.NewMiddleware(eng, mcp.NewToolCapabilityMap())
+
+	var capturedAgentID string
+	handler := m.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		result := mcp.AuthResultFromContext(r.Context())
+		if result != nil {
+			capturedAgentID = result.AgentID
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	body, _ := json.Marshal(map[string]string{"tool": "read_file", "token": encodedToken})
+	req := httptest.NewRequest(http.MethodPost, "/mcp/call", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if capturedAgentID != agent.ID {
+		t.Fatalf("expected AgentID=%s in context, got %s", agent.ID, capturedAgentID)
+	}
+}
+
+func TestMCPMiddleware_BearerHeaderToken(t *testing.T) {
+	eng, ks, agentStore := newMiddlewareEngine(t)
+	encodedToken, _ := registerAndIssueToken(t, ks, agentStore, []string{"read_file"})
+
+	m := mcp.NewMiddleware(eng, mcp.NewToolCapabilityMap())
+
+	called := false
+	handler := m.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	body, _ := json.Marshal(map[string]string{"tool": "read_file"})
+	req := httptest.NewRequest(http.MethodPost, "/mcp/call", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+encodedToken)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !called {
+		t.Fatal("expected downstream handler to be called")
+	}
+}
+
+func TestMCPMiddleware_XMCPToolHeader(t *testing.T) {
+	eng, ks, agentStore := newMiddlewareEngine(t)
+	encodedToken, _ := registerAndIssueToken(t, ks, agentStore, []string{"write_file"})
+
+	m := mcp.NewMiddleware(eng, mcp.NewToolCapabilityMap())
+
+	handler := m.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// No JSON body — use headers only.
+	req := httptest.NewRequest(http.MethodPost, "/mcp/call", nil)
+	req.Header.Set("Authorization", "Bearer "+encodedToken)
+	req.Header.Set("X-MCP-Tool", "write_file")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with X-MCP-Tool header, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestMCPMiddleware_MissingCapabilityReturns401(t *testing.T) {
+	eng, ks, agentStore := newMiddlewareEngine(t)
+	// Token only has "read_file".
+	encodedToken, _ := registerAndIssueToken(t, ks, agentStore, []string{"read_file"})
+
+	m := mcp.NewMiddleware(eng, mcp.NewToolCapabilityMap())
+
+	handler := m.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	body, _ := json.Marshal(map[string]string{"tool": "write_file", "token": encodedToken})
+	req := httptest.NewRequest(http.MethodPost, "/mcp/call", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for missing capability, got %d", w.Code)
+	}
+}
+
+func TestMCPMiddleware_NilCapMapUsesDefaultMapping(t *testing.T) {
+	eng, ks, agentStore := newMiddlewareEngine(t)
+	encodedToken, _ := registerAndIssueToken(t, ks, agentStore, []string{"search"})
+
+	// nil capMap → NewToolCapabilityMap() (identity mapping)
+	m := mcp.NewMiddleware(eng, nil)
+
+	handler := m.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	body, _ := json.Marshal(map[string]string{"tool": "search", "token": encodedToken})
+	req := httptest.NewRequest(http.MethodPost, "/mcp/call", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TokenToMCPClaims tests
+
+func TestTokenToMCPClaims_ValidToken(t *testing.T) {
+	ks, err := agcrypto.NewRootKeyStore()
+	if err != nil {
+		t.Fatalf("NewRootKeyStore: %v", err)
+	}
+	act, err := token.IssueRootToken("agent://claims-test", []string{"read_file"}, token.BlockConditions{
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	}, ks.PrivateKey())
+	if err != nil {
+		t.Fatalf("IssueRootToken: %v", err)
+	}
+	encoded, _ := token.Encode(act)
+
+	claims, err := mcp.TokenToMCPClaims(encoded)
+	if err != nil {
+		t.Fatalf("TokenToMCPClaims: %v", err)
+	}
+	if claims.AgentID != "agent://claims-test" {
+		t.Fatalf("expected AgentID=agent://claims-test, got %s", claims.AgentID)
+	}
+	if len(claims.Capabilities) != 1 || claims.Capabilities[0] != "read_file" {
+		t.Fatalf("expected capabilities=[read_file], got %v", claims.Capabilities)
+	}
+	if claims.ChainDepth != 1 {
+		t.Fatalf("expected chain_depth=1, got %d", claims.ChainDepth)
+	}
+}
+
+func TestTokenToMCPClaims_InvalidToken(t *testing.T) {
+	_, err := mcp.TokenToMCPClaims("not-valid-base64!!!")
+	if err == nil {
+		t.Fatal("expected error for invalid token")
+	}
+}

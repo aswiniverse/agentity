@@ -179,6 +179,85 @@ func CORSMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 	}
 }
 
+// AgentRateLimiter is a token-bucket rate limiter keyed by agent ID.
+// It allows up to `rate` requests per `interval` per agent, with the same
+// bounded-memory design as RateLimiter (background eviction of stale entries).
+type AgentRateLimiter struct {
+	mu       sync.Mutex
+	buckets  map[string]*bucket
+	rate     int
+	interval time.Duration
+	done     chan struct{}
+}
+
+// NewAgentRateLimiter creates an agent-scoped rate limiter.
+func NewAgentRateLimiter(rate int, interval time.Duration) *AgentRateLimiter {
+	rl := &AgentRateLimiter{
+		buckets:  make(map[string]*bucket),
+		rate:     rate,
+		interval: interval,
+		done:     make(chan struct{}),
+	}
+	go rl.cleanupLoop()
+	return rl
+}
+
+// Stop terminates the background cleanup goroutine.
+func (rl *AgentRateLimiter) Stop() {
+	close(rl.done)
+}
+
+func (rl *AgentRateLimiter) cleanupLoop() {
+	ticker := time.NewTicker(rl.interval * 5)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-rl.done:
+			return
+		case <-ticker.C:
+			threshold := time.Now().Add(-5 * rl.interval)
+			rl.mu.Lock()
+			for key, b := range rl.buckets {
+				if b.lastSeen.Before(threshold) {
+					delete(rl.buckets, key)
+				}
+			}
+			rl.mu.Unlock()
+		}
+	}
+}
+
+// Allow returns true if the agent is within its rate limit, false if throttled.
+func (rl *AgentRateLimiter) Allow(agentID string) bool {
+	now := time.Now()
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	b, exists := rl.buckets[agentID]
+	if !exists {
+		b = &bucket{tokens: rl.rate, lastRefill: now, lastSeen: now}
+		rl.buckets[agentID] = b
+	}
+
+	b.lastSeen = now
+
+	elapsed := now.Sub(b.lastRefill)
+	if elapsed >= rl.interval {
+		periods := int(elapsed / rl.interval)
+		b.tokens += periods * rl.rate
+		if b.tokens > rl.rate {
+			b.tokens = rl.rate
+		}
+		b.lastRefill = b.lastRefill.Add(time.Duration(periods) * rl.interval)
+	}
+
+	if b.tokens <= 0 {
+		return false
+	}
+	b.tokens--
+	return true
+}
+
 // RateLimiter implements a token bucket rate limiter per IP with bounded memory.
 // M2 fix: a background goroutine periodically evicts stale buckets to prevent OOM.
 type RateLimiter struct {
