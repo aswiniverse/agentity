@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -108,10 +109,16 @@ func TestApprovalService_ListPending(t *testing.T) {
 }
 
 func TestApprovalService_WebhookFired(t *testing.T) {
+	var mu sync.Mutex
 	var received map[string]string
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &received)
+		var data map[string]string
+		_ = json.Unmarshal(body, &data)
+		mu.Lock()
+		received = data
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -127,24 +134,31 @@ func TestApprovalService_WebhookFired(t *testing.T) {
 	// Webhook fires in goroutine; give it a moment.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if received != nil {
+		mu.Lock()
+		got := received
+		mu.Unlock()
+		if got != nil {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	if received == nil {
+	mu.Lock()
+	got := received
+	mu.Unlock()
+
+	if got == nil {
 		t.Fatal("webhook was not fired within 2 seconds")
 	}
-	if received["approval_id"] != ar.ID {
-		t.Errorf("webhook approval_id: got %s, want %s", received["approval_id"], ar.ID)
+	if got["approval_id"] != ar.ID {
+		t.Errorf("webhook approval_id: got %s, want %s", got["approval_id"], ar.ID)
 	}
-	if received["agent_id"] != "agent-wh" {
-		t.Errorf("webhook agent_id: got %s, want agent-wh", received["agent_id"])
+	if got["agent_id"] != "agent-wh" {
+		t.Errorf("webhook agent_id: got %s, want agent-wh", got["agent_id"])
 	}
 	expectedApproveURL := "http://localhost:8080/api/v1/approvals/" + ar.ID + "/approve"
-	if received["approve_url"] != expectedApproveURL {
-		t.Errorf("webhook approve_url: got %s, want %s", received["approve_url"], expectedApproveURL)
+	if got["approve_url"] != expectedApproveURL {
+		t.Errorf("webhook approve_url: got %s, want %s", got["approve_url"], expectedApproveURL)
 	}
 }
 
