@@ -17,6 +17,7 @@ type Config struct {
 	Auth   AuthConfig   `mapstructure:"auth"`
 	Log    LogConfig    `mapstructure:"log"`
 	OTEL   OTELConfig   `mapstructure:"otel"`
+	OIDC   OIDCConfig   `mapstructure:"oidc"`
 }
 
 // ServerConfig holds HTTP server settings.
@@ -67,6 +68,12 @@ type OTELConfig struct {
 	ServiceName  string `mapstructure:"service_name"`
 	ExporterType string `mapstructure:"exporter_type"` // stdout, otlp
 	Endpoint     string `mapstructure:"endpoint"`
+}
+
+// OIDCConfig holds OpenID Connect settings.
+type OIDCConfig struct {
+	// IssuerURL is the base URL for OIDC discovery (AGENTITY_OIDC_ISSUER_URL).
+	IssuerURL string `mapstructure:"issuer_url"`
 }
 
 // Load reads configuration from file, environment, and flags.

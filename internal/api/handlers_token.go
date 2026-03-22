@@ -11,6 +11,7 @@ import (
 	"github.com/agentity/agentity/internal/metrics"
 	"github.com/agentity/agentity/internal/policy"
 	"github.com/agentity/agentity/internal/revocation"
+	"github.com/agentity/agentity/internal/user"
 	agcrypto "github.com/agentity/agentity/pkg/crypto"
 	"github.com/agentity/agentity/pkg/token"
 )
@@ -23,6 +24,7 @@ type TokenHandlers struct {
 	auditLogger      *audit.Logger
 	identityService  *identity.Service
 	policyEngine     *policy.Engine
+	userService      *user.UserService
 	agentLimiter     *AgentRateLimiter
 }
 
@@ -34,6 +36,7 @@ func NewTokenHandlers(
 	auditLog *audit.Logger,
 	idService *identity.Service,
 	policyEngine *policy.Engine,
+	userSvc *user.UserService,
 ) *TokenHandlers {
 	return &TokenHandlers{
 		rootKeyStore:     rootKeyStore,
@@ -42,6 +45,7 @@ func NewTokenHandlers(
 		auditLogger:      auditLog,
 		identityService:  idService,
 		policyEngine:     policyEngine,
+		userService:      userSvc,
 		// 20 token operations per second per agent.
 		agentLimiter: NewAgentRateLimiter(20, time.Second),
 	}
@@ -52,6 +56,7 @@ type IssueTokenRequest struct {
 	AgentID      string               `json:"agent_id"`
 	Capabilities []string             `json:"capabilities"`
 	Conditions   token.BlockConditions `json:"conditions"`
+	UserToken    string               `json:"user_token,omitempty"`
 }
 
 // IssueToken handles POST /api/v1/tokens/issue
@@ -113,6 +118,30 @@ func (h *TokenHandlers) IssueToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// If a user token is provided, verify OIDC token and check user-agent binding.
+	var userID string
+	if req.UserToken != "" && h.userService != nil {
+		oidcUser, err := h.userService.VerifyUserToken(r.Context(), req.UserToken)
+		if err != nil {
+			writeProblem(w, http.StatusUnauthorized, "https://agentity.dev/errors/user-token-invalid", "User Token Invalid", err.Error())
+			return
+		}
+		// Look up user by external ID to get the internal user ID.
+		store := h.userService.Store()
+		existingUser, err := store.GetUserByExternalID(r.Context(), oidcUser.ExternalID, oidcUser.Issuer)
+		if err != nil {
+			writeProblem(w, http.StatusForbidden, "https://agentity.dev/errors/user-not-found", "User Not Found", "User not registered")
+			return
+		}
+		// Check binding exists.
+		_, err = store.GetBinding(r.Context(), existingUser.ID, req.AgentID)
+		if err != nil {
+			writeProblem(w, http.StatusForbidden, "https://agentity.dev/errors/no-binding", "No Binding", "No active binding between user and agent")
+			return
+		}
+		userID = existingUser.ID
+	}
+
 	issueStart := time.Now()
 	act, err := token.IssueRootToken(req.AgentID, req.Capabilities, req.Conditions, h.rootKeyStore.PrivateKey())
 	metrics.IssuanceDuration.Observe(time.Since(issueStart).Seconds())
@@ -120,6 +149,12 @@ func (h *TokenHandlers) IssueToken(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/token-issue-failed", "Token Issue Failed", err.Error())
 		return
 	}
+
+	// Set UserID in the root block if user token was verified.
+	if userID != "" && len(act.Blocks) > 0 {
+		act.Blocks[0].UserID = userID
+	}
+
 	metrics.TokensIssued.Inc()
 
 	encoded, err := token.Encode(act)

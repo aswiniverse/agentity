@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -58,13 +59,16 @@ type Logger struct {
 	mu         sync.RWMutex
 	entries    []AuditEntry
 	signingKey ed25519.PrivateKey
+	store      AuditStore
 }
 
 // NewLogger creates a new audit logger with the given signing key.
-func NewLogger(signingKey ed25519.PrivateKey) *Logger {
+// store may be nil, in which case only in-memory logging is used.
+func NewLogger(signingKey ed25519.PrivateKey, store AuditStore) *Logger {
 	return &Logger{
 		entries:    make([]AuditEntry, 0, 256),
 		signingKey: signingKey,
+		store:      store,
 	}
 }
 
@@ -123,19 +127,45 @@ func (l *Logger) append(entry AuditEntry) (*AuditEntry, error) {
 	entry.Signature = sig
 
 	l.mu.Lock()
-	defer l.mu.Unlock()
-
 	// Evict oldest 10% when cap is reached to prevent unbounded growth.
 	if len(l.entries) >= maxEntries {
 		evict := maxEntries / 10
 		l.entries = l.entries[evict:]
 	}
 	l.entries = append(l.entries, entry)
+	l.mu.Unlock()
+
+	// Write-through to persistent store with retry (max 3 attempts).
+	if l.store != nil {
+		go func(e AuditEntry) {
+			const maxRetries = 3
+			for attempt := 1; attempt <= maxRetries; attempt++ {
+				if err := l.store.Insert(&e); err == nil {
+					return
+				} else if attempt == maxRetries {
+					log.Printf("audit: failed to persist entry %s after %d attempts: %v", e.ID, maxRetries, err)
+				} else {
+					time.Sleep(100 * time.Millisecond)
+				}
+			}
+		}(entry)
+	}
+
 	return &entry, nil
 }
 
 // List returns audit entries matching the given filter.
+// When a persistent store is configured it queries from Postgres;
+// on failure (or when no store is configured) it falls back to in-memory.
 func (l *Logger) List(filter AuditFilter) []AuditEntry {
+	if l.store != nil {
+		entries, err := l.store.List(filter)
+		if err == nil {
+			return entries
+		}
+		log.Printf("audit: store List failed, falling back to in-memory: %v", err)
+	}
+
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 

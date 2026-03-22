@@ -1,7 +1,9 @@
 package audit_test
 
 import (
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/agentity/agentity/internal/audit"
 	agcrypto "github.com/agentity/agentity/pkg/crypto"
@@ -13,7 +15,16 @@ func newLogger(t *testing.T) *audit.Logger {
 	if err != nil {
 		t.Fatalf("create root key store: %v", err)
 	}
-	return audit.NewLogger(ks.PrivateKey())
+	return audit.NewLogger(ks.PrivateKey(), nil)
+}
+
+func newLoggerWithStore(t *testing.T, store audit.AuditStore) *audit.Logger {
+	t.Helper()
+	ks, err := agcrypto.NewRootKeyStore()
+	if err != nil {
+		t.Fatalf("create root key store: %v", err)
+	}
+	return audit.NewLogger(ks.PrivateKey(), store)
 }
 
 func TestAuditLogger_Log(t *testing.T) {
@@ -132,5 +143,95 @@ func TestAuditLogger_ConcurrentWrites(t *testing.T) {
 	}
 	if l.Count() != 20 {
 		t.Fatalf("expected 20 entries after concurrent writes, got %d", l.Count())
+	}
+}
+
+// TestAuditLogger_NilStore_InMemoryFallback verifies that when store is nil,
+// in-memory log is used and List works correctly.
+func TestAuditLogger_NilStore_InMemoryFallback(t *testing.T) {
+	l := newLogger(t) // store=nil
+	l.Log(audit.EventTokenIssued, "actor-1", "target-1", "issue", "success", nil)
+	l.Log(audit.EventTokenVerified, "actor-2", "target-2", "verify", "success", nil)
+
+	entries := l.List(audit.AuditFilter{Limit: 10})
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries from in-memory, got %d", len(entries))
+	}
+	if l.Count() != 2 {
+		t.Fatalf("expected count=2, got %d", l.Count())
+	}
+}
+
+// TestAuditLogger_WriteThrough verifies that entries are written to the store.
+func TestAuditLogger_WriteThrough(t *testing.T) {
+	ms := &mockStore{}
+	l := newLoggerWithStore(t, ms)
+
+	l.Log(audit.EventTokenIssued, "actor-1", "target-1", "issue", "success", nil)
+
+	// Give the goroutine time to complete.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ms.countInserted() >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if ms.countInserted() != 1 {
+		t.Fatalf("expected 1 entry in store, got %d", ms.countInserted())
+	}
+}
+
+// TestAuditLogger_ListFromStore verifies that List returns data from the store when configured.
+func TestAuditLogger_ListFromStore(t *testing.T) {
+	ms := &mockStore{}
+	l := newLoggerWithStore(t, ms)
+
+	l.Log(audit.EventTokenIssued, "actor-store", "target-1", "issue", "success", nil)
+
+	// Wait for write-through goroutine.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ms.countInserted() >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	entries := l.List(audit.AuditFilter{ActorID: "actor-store", Limit: 10})
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry from store, got %d", len(entries))
+	}
+	if entries[0].ActorID != "actor-store" {
+		t.Fatalf("unexpected actor_id: %s", entries[0].ActorID)
+	}
+}
+
+// TestAuditLogger_RetryOnFailure verifies that Insert is retried on transient errors.
+func TestAuditLogger_RetryOnFailure(t *testing.T) {
+	// First 2 calls fail, 3rd succeeds.
+	ms := &mockStore{
+		insertErrs: []error{
+			errors.New("transient error 1"),
+			errors.New("transient error 2"),
+			nil, // success on 3rd attempt
+		},
+	}
+	l := newLoggerWithStore(t, ms)
+
+	l.Log(audit.EventTokenIssued, "actor-retry", "target-1", "issue", "success", nil)
+
+	// Wait for retry logic (2 retries × 100ms sleep + buffer).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ms.countInserted() >= 1 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if ms.countInserted() != 1 {
+		t.Fatalf("expected entry to be persisted after retries, got %d entries", ms.countInserted())
 	}
 }

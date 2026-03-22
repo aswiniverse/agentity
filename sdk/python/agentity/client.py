@@ -53,7 +53,7 @@ class AgentityClient:
         self._api_key = api_key
         self._client = httpx.Client(
             base_url=self._base_url,
-            headers={"X-Admin-API-Key": api_key, "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             timeout=timeout,
         )
 
@@ -311,7 +311,7 @@ class AsyncAgentityClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
                 base_url=self._base_url,
-                headers={"X-Admin-API-Key": self._api_key, "Content-Type": "application/json"},
+                headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
                 timeout=self._timeout,
             )
         return self._client

@@ -29,7 +29,7 @@ func newEngine(t *testing.T) (*delegation.Engine, *agcrypto.RootKeyStore) {
 	}
 	agentStore := store.NewMemoryStore()
 	revReg := revocation.NewRegistry(nil)
-	auditLog := audit.NewLogger(ks.PrivateKey())
+	auditLog := audit.NewLogger(ks.PrivateKey(), nil)
 	keyResolver := delegation.NewKeyResolver(ks, agentStore)
 	eng := delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
 	return eng, ks
@@ -118,7 +118,7 @@ func TestVerifyToolCall_ValidToken(t *testing.T) {
 	// Re-create engine with the same store for agent lookup.
 	ks2 := ks
 	revReg := revocation.NewRegistry(nil)
-	auditLog := audit.NewLogger(ks2.PrivateKey())
+	auditLog := audit.NewLogger(ks2.PrivateKey(), nil)
 	keyResolver := delegation.NewKeyResolver(ks2, agentStore)
 	eng = delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
 
@@ -149,7 +149,7 @@ func TestVerifyToolCall_MissingCapability(t *testing.T) {
 	eng, ks := newEngine(t)
 	agentStore := store.NewMemoryStore()
 	revReg := revocation.NewRegistry(nil)
-	auditLog := audit.NewLogger(ks.PrivateKey())
+	auditLog := audit.NewLogger(ks.PrivateKey(), nil)
 	keyResolver := delegation.NewKeyResolver(ks, agentStore)
 	eng = delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
 
@@ -175,7 +175,7 @@ func TestVerifyToolCall_ExplicitCapabilityMapping(t *testing.T) {
 	eng, ks := newEngine(t)
 	agentStore := store.NewMemoryStore()
 	revReg := revocation.NewRegistry(nil)
-	auditLog := audit.NewLogger(ks.PrivateKey())
+	auditLog := audit.NewLogger(ks.PrivateKey(), nil)
 	keyResolver := delegation.NewKeyResolver(ks, agentStore)
 	eng = delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
 
@@ -203,7 +203,7 @@ func newMiddlewareEngine(t *testing.T) (*delegation.Engine, *agcrypto.RootKeySto
 	}
 	agentStore := store.NewMemoryStore()
 	revReg := revocation.NewRegistry(nil)
-	auditLog := audit.NewLogger(ks.PrivateKey())
+	auditLog := audit.NewLogger(ks.PrivateKey(), nil)
 	keyResolver := delegation.NewKeyResolver(ks, agentStore)
 	eng := delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
 	return eng, ks, agentStore

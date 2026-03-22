@@ -28,6 +28,7 @@ type Block struct {
 	IssuedAt     int64           `json:"iat"`
 	Signature    string          `json:"sig"`
 	SignerKeyID  string          `json:"kid"`
+	UserID       string          `json:"uid,omitempty"`
 }
 
 // VerifiedACT represents a successfully verified ACT token with resolved fields.
@@ -38,6 +39,7 @@ type VerifiedACT struct {
 	ExpiresAt      int64    `json:"expires_at"`
 	ChainDepth     int      `json:"chain_depth"`
 	DelegationPath []string `json:"delegation_path"`
+	UserID         string   `json:"user_id,omitempty"`
 }
 
 // KeyResolver resolves a signer key ID to a public key (base64url-encoded).
