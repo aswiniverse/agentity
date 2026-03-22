@@ -74,15 +74,26 @@ agent_model != "gpt-3.5-turbo"
 "db:write" in capabilities ? agent_model in ["claude-3-5-sonnet"] : true
 ```
 
-Policies are live — add, remove, and update them at runtime without a deployment.
+Policies are live — add, remove, and update them at runtime without a deployment. Policies are persisted to Postgres so they survive restarts.
 
 ### Zero-Trust Key Architecture
 
 Every agent holds its own Ed25519 private key. Delegation signing happens **client-side**. The server never touches a private key after registration. If the server is compromised, the attacker gets public keys and audit logs — not the ability to forge delegation chains.
 
-### MCP-Native
+### System Prompt Fingerprinting
 
-Agentity ships a `pkg/mcp` middleware that maps Model Context Protocol tool names to ACT capabilities. Drop it in front of any MCP server and every tool call becomes authenticated, audited, and capability-gated.
+When an agent registers, Agentity records a hash of its system prompt and a fingerprint of its allowed tools. These are embedded in the root token block at issuance. At every verify call, Agentity checks the current agent fingerprint against what was baked into the token — if the system prompt changed, the token is rejected before it can be used.
+
+```
+Token issued with fingerprint A → agent's system prompt updated → verify → REJECTED
+"agent fingerprint mismatch: system prompt changed"
+```
+
+Agents can't quietly swap their instructions mid-session.
+
+### MCP-Native with OAuth 2.1
+
+Agentity ships a `pkg/mcp` middleware that maps Model Context Protocol tool names to ACT capabilities. It implements OAuth 2.1 with PKCE and RFC 8707 resource indicators — drop it in front of any MCP server and every tool call becomes authenticated, audited, and capability-gated.
 
 ```go
 capMap := mcp.NewToolCapabilityMap().
@@ -92,6 +103,19 @@ capMap := mcp.NewToolCapabilityMap().
 auth := mcp.NewMiddleware(delegationEngine, capMap)
 http.Handle("/mcp/call", auth.Handler(yourMCPHandler))
 ```
+
+Unauthorized calls receive a `WWW-Authenticate: Bearer realm="agentity", resource="..."` challenge per RFC 9728.
+
+### Google A2A Bridge
+
+Agentity ships a `pkg/a2a` middleware for the Google Agent-to-Agent protocol. Drop it in front of any A2A-compatible endpoint to get full ACT verification on every agent-to-agent skill call.
+
+```go
+bridge := a2a.NewMiddleware(delegationEngine, capabilityMap)
+http.Handle("/a2a/", bridge.Handler(yourA2AHandler))
+```
+
+The middleware extracts `skill_id` and `task_id` from the JSON body, validates the ACT in the `Authorization` header, and maps skill IDs to required capabilities.
 
 ---
 
@@ -103,7 +127,7 @@ http.Handle("/mcp/call", auth.Handler(yourMCPHandler))
 docker compose up -d
 ```
 
-Agentity starts with PostgreSQL, Redis, and a freshly generated root key. API at `http://localhost:8080`.
+Agentity starts with PostgreSQL, Redis, and a freshly generated root key. API at `http://localhost:8080`. Admin UI at `http://localhost:8080/admin`.
 
 ### No Dependencies (Dev Mode)
 
@@ -112,6 +136,17 @@ go run ./cmd/agentity --dev
 ```
 
 In-memory store, auto-generated root key, admin key is `dev-admin-key`. Perfect for local development and CI.
+
+### Kubernetes (Helm)
+
+```bash
+helm install agentity charts/agentity \
+  --set postgresql.enabled=true \
+  --set ingress.enabled=true \
+  --set ingress.host=agentity.yourdomain.com
+```
+
+The chart includes liveness/readiness probes, HPA, ConfigMap/Secret separation, and TLS ingress support. See `charts/agentity/values.yaml` for the full configuration reference.
 
 ### Build from Source
 
@@ -133,12 +168,11 @@ agentctl agents register \
   --model "claude-3-5-sonnet-20241022" \
   --tools "web_search,code_exec,write_report"
 
-# Issue a root token: 2 hours, max 3 delegation hops
+# Issue a root token: 2 hours validity
 agentctl tokens issue \
   --agent "agent://<uuid>" \
   --caps "web_search,code_exec,write_report" \
-  --ttl 2h \
-  --max-delegations 3
+  --ttl 2h
 
 # Token is now live. Your orchestrator can delegate to children.
 # Each child can only receive a SUBSET of the parent's capabilities.
@@ -173,7 +207,6 @@ token, token_id = client.issue_token(
     agent_id=orchestrator.id,
     capabilities=["web_search", "code_exec", "write_report"],
     expires_at=int(time.time()) + 7200,
-    max_delegations=3,
 )
 
 # Register a child — it can only get a subset
@@ -203,7 +236,23 @@ print(f"Chain depth: {verified.chain_depth}")    # 2
 
 Install: `pip install agentity`
 
-**Framework integration examples:**
+### Framework Integrations
+
+Agentity integrates natively with the major Python agent frameworks:
+
+```python
+# LangChain
+from agentity.integrations.langchain import AuthenticatedChain
+chain = AuthenticatedChain.from_llm(llm, token=token, required_capabilities=["read_file"])
+
+# CrewAI
+from agentity.integrations.crewai import AuthenticatedCrew
+crew = AuthenticatedCrew(agents=[...], tasks=[...], token=token)
+
+# AutoGen
+from agentity.integrations.autogen import AuthenticatedAssistant
+assistant = AuthenticatedAssistant(name="agent", token=token, required_capabilities=["code_exec"])
+```
 
 | Framework | Example |
 |---|---|
@@ -227,20 +276,19 @@ orch, orchKey, _ := client.RegisterAgent(ctx, sdk.RegisterAgentRequest{
 tok, _ := client.IssueToken(ctx, sdk.IssueTokenRequest{
     AgentID:      orch.ID,
     Capabilities: []string{"web_search", "code_exec"},
-    Conditions:   token.BlockConditions{
-        ExpiresAt:      time.Now().Add(2 * time.Hour).Unix(),
-        MaxDelegations: 3,
+    Conditions: token.BlockConditions{
+        ExpiresAt: time.Now().Add(2 * time.Hour).Unix(),
     },
 })
 
-// Delegate — attenuation enforced at signing time
-delegated, _ := client.DelegateToken(ctx, sdk.DelegateTokenRequest{
-    ParentToken:    tok,
-    ChildAgentID:   child.ID,
-    Capabilities:   []string{"web_search"}, // code_exec not included
-    Conditions:     token.BlockConditions{ExpiresAt: time.Now().Add(time.Hour).Unix()},
-    ParentAgentKey: orchKey,
-})
+// Delegate locally — private key never leaves the process
+delegated, _ := client.DelegateTokenLocally(ctx,
+    tok,                              // parent token
+    child.ID,                         // child agent ID
+    []string{"web_search"},           // attenuated capabilities
+    token.BlockConditions{ExpiresAt: time.Now().Add(time.Hour).Unix()},
+    orchKey,                          // parent private key (stays local)
+)
 
 verified, _ := client.VerifyToken(ctx, delegated)
 // verified.Capabilities == ["web_search"]
@@ -249,12 +297,91 @@ verified, _ := client.VerifyToken(ctx, delegated)
 
 ---
 
+## User-to-Agent Binding (OIDC)
+
+Link human identities to agents. When a user presents their OIDC `id_token` at token issuance, the user ID is embedded in the root token block and carried through the delegation chain.
+
+```bash
+# Register an OIDC provider
+curl -X POST http://localhost:8080/api/v1/admin/oidc-providers \
+  -H "Authorization: Bearer dev-admin-key" \
+  -d '{"issuer": "https://accounts.google.com", "client_id": "my-app"}'
+
+# Bind a user to an agent (user presents their OIDC id_token)
+curl -X POST http://localhost:8080/api/v1/users/bind \
+  -d '{"user_token": "<oidc-id-token>", "agent_id": "agent://uuid", "scopes": ["read_file"]}'
+
+# Issue a token with user context
+curl -X POST http://localhost:8080/api/v1/tokens/issue \
+  -d '{"agent_id": "agent://uuid", "capabilities": ["read_file"], "user_token": "<oidc-id-token>", ...}'
+```
+
+The verified token carries `user_id` — audit logs tie every action to both the agent and the human who authorized it.
+
+---
+
+## Credential Vault
+
+Per-agent encrypted credential storage. Store API keys, secrets, and connection strings — encrypted with AES-256-GCM, never returned in list operations.
+
+```bash
+# Store a credential
+curl -X POST http://localhost:8080/api/v1/agents/<id>/credentials \
+  -H "Authorization: Bearer dev-admin-key" \
+  -d '{"key": "openai_api_key", "value": "sk-..."}'
+
+# List credential keys (values never returned in list)
+curl http://localhost:8080/api/v1/agents/<id>/credentials
+
+# Retrieve a specific credential
+curl http://localhost:8080/api/v1/agents/<id>/credentials/openai_api_key
+
+# Delete a credential
+curl -X DELETE http://localhost:8080/api/v1/agents/<id>/credentials/openai_api_key
+```
+
+Set `AGENTITY_VAULT_KEY` to a 32-byte hex string to enable the vault. Keys are versioned (`local-v1`) for future KMS rotation support.
+
+---
+
+## Human Approval Gates
+
+Require human sign-off before an agent can access sensitive resources. Supports webhook notifications for async workflows.
+
+```bash
+# Request approval
+curl -X POST http://localhost:8080/api/v1/approvals \
+  -d '{"agent_id": "agent://uuid", "token_id": "tok-123", "resource": "prod-database", "reason": "Needs access to run migration", "webhook_url": "https://yourapp.com/hooks/approvals"}'
+
+# Webhook receives: {approval_id, agent_id, resource, reason, approve_url, deny_url}
+
+# Approve (or deny) via URL or API
+curl -X POST http://localhost:8080/api/v1/approvals/<id>/approve \
+  -d '{"approver_id": "alice@example.com"}'
+```
+
+Pending approvals are queryable: `GET /api/v1/approvals?agent_id=<id>&status=pending`
+
+---
+
+## Admin UI
+
+A built-in web dashboard is served at `/admin`. No separate service needed — it's embedded in the binary.
+
+```
+http://localhost:8080/admin
+```
+
+The dashboard shows agents, tokens, audit log, policies, approvals, and vault keys. All backed by the same REST API — no privileged access beyond the admin API key.
+
+---
+
 ## Observability Built In
 
 | Signal | Endpoint | What You Get |
 |---|---|---|
 | **Prometheus metrics** | `GET /metrics` | Tokens issued/verified/rejected, policy denials, verification latency histograms |
-| **Signed audit log** | `GET /api/v1/audit` | Every issuance, delegation, verification, and revocation — signed with the server's root key |
+| **Signed audit log** | `GET /api/v1/audit` | Every issuance, delegation, verification, and revocation — signed with the server's root key, persisted to Postgres |
 | **OpenAPI spec** | `GET /api/v1/openapi.json` | Full OpenAPI 3.1 — import into Postman, generate clients, or browse with `/docs` |
 
 ---
@@ -284,25 +411,31 @@ agentctl admin policies create \
   --priority 50
 ```
 
+Policies are persisted to Postgres and survive restarts. The engine defaults to **deny-all** if the policy store fails to load — fail closed, not open.
+
 ---
 
 ## How Agentity Stacks Up
 
-| | Agentity | Keycloak | Auth0 | Casdoor |
+| | Agentity | Keycloak | Auth0 | AWS AgentCore |
 |---|---|---|---|---|
-| Designed for AI agents | **Yes** | No | No | No |
+| Designed for AI agents | **Yes** | No | No | Yes |
 | Cryptographic capability chains | **Yes** | No | No | No |
 | Client-side delegation signing | **Yes** | No | No | No |
 | Multi-hop trust chains | **Yes** | No | No | No |
 | Capability attenuation (math-enforced) | **Yes** | No | No | No |
 | Cascade revocation | **Yes** | Partial | No | No |
 | CEL runtime policy engine | **Yes** | No | No | No |
-| MCP gateway middleware | **Yes** | No | No | No |
+| MCP gateway (OAuth 2.1 + PKCE) | **Yes** | No | No | No |
+| Google A2A bridge middleware | **Yes** | No | No | No |
 | System prompt fingerprinting | **Yes** | No | No | No |
+| Per-agent credential vault | **Yes** | No | No | **Yes** |
+| Human approval gates | **Yes** | No | No | **Yes** |
+| User-to-agent binding (OIDC) | **Yes** | Yes | Yes | Partial |
+| LangChain / CrewAI / AutoGen | **Yes** | No | No | Partial |
+| Kubernetes Helm chart | **Yes** | Yes | No | No |
 | Signed audit trail | **Yes** | Partial | Partial | Partial |
-| OAuth2.1 / OIDC compatible | **Yes** | Yes | Yes | Yes |
-| Prometheus metrics | **Yes** | Yes | Partial | No |
-| Open source | **Yes** | Yes | No | Yes |
+| Open source | **Yes** | Yes | No | No |
 
 ---
 
@@ -321,8 +454,11 @@ AGENTITY_STORE_DSN=postgres://user:pass@host/db
 AGENTITY_REDIS_ENABLED=true
 AGENTITY_REDIS_ADDR=localhost:6379
 
-# OIDC
-AGENTITY_OIDC_ISSUER_URL=https://agentity.yourdomain.com
+# OIDC (for user-to-agent binding)
+AGENTITY_OIDC_ISSUER_URL=https://accounts.google.com
+
+# Credential vault (32-byte hex key)
+AGENTITY_VAULT_KEY=0000000000000000000000000000000000000000000000000000000000000000
 ```
 
 All settings are also available as flags and in `config.yaml`. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full internals reference.
