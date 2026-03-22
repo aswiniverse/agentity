@@ -3,9 +3,12 @@ package mcp_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -404,5 +407,162 @@ func TestTokenToMCPClaims_InvalidToken(t *testing.T) {
 	_, err := mcp.TokenToMCPClaims("not-valid-base64!!!")
 	if err == nil {
 		t.Fatal("expected error for invalid token")
+	}
+}
+
+// OAuth 2.1 / PKCE tests
+
+func TestGenerateAuthorizationURL_ContainsResourceParam(t *testing.T) {
+	config := mcp.OAuthConfig{
+		ClientID:          "test-client",
+		AuthorizationURL:  "https://auth.example.com/authorize",
+		ResourceIndicator: "https://mcp.example.com",
+		Scopes:            []string{"mcp:tools"},
+	}
+	verifier, err := mcp.GenerateCodeVerifier()
+	if err != nil {
+		t.Fatalf("GenerateCodeVerifier: %v", err)
+	}
+	u, err := mcp.GenerateAuthorizationURL(config, "state123", verifier)
+	if err != nil {
+		t.Fatalf("GenerateAuthorizationURL: %v", err)
+	}
+	parsed, err := url.Parse(u)
+	if err != nil {
+		t.Fatalf("parse URL: %v", err)
+	}
+	q := parsed.Query()
+	if got := q.Get("resource"); got != "https://mcp.example.com" {
+		t.Fatalf("expected resource=https://mcp.example.com, got %q", got)
+	}
+	if got := q.Get("client_id"); got != "test-client" {
+		t.Fatalf("expected client_id=test-client, got %q", got)
+	}
+	if got := q.Get("response_type"); got != "code" {
+		t.Fatalf("expected response_type=code, got %q", got)
+	}
+	if got := q.Get("state"); got != "state123" {
+		t.Fatalf("expected state=state123, got %q", got)
+	}
+}
+
+func TestGenerateAuthorizationURL_ContainsPKCE(t *testing.T) {
+	config := mcp.OAuthConfig{
+		ClientID:         "test-client",
+		AuthorizationURL: "https://auth.example.com/authorize",
+	}
+	verifier, err := mcp.GenerateCodeVerifier()
+	if err != nil {
+		t.Fatalf("GenerateCodeVerifier: %v", err)
+	}
+	u, err := mcp.GenerateAuthorizationURL(config, "state456", verifier)
+	if err != nil {
+		t.Fatalf("GenerateAuthorizationURL: %v", err)
+	}
+	parsed, err := url.Parse(u)
+	if err != nil {
+		t.Fatalf("parse URL: %v", err)
+	}
+	q := parsed.Query()
+	if got := q.Get("code_challenge_method"); got != "S256" {
+		t.Fatalf("expected code_challenge_method=S256, got %q", got)
+	}
+	challenge := q.Get("code_challenge")
+	if challenge == "" {
+		t.Fatal("expected non-empty code_challenge")
+	}
+	// Verify the challenge matches what ComputeCodeChallenge produces.
+	expected := mcp.ComputeCodeChallenge(verifier)
+	if challenge != expected {
+		t.Fatalf("code_challenge mismatch: got %q, want %q", challenge, expected)
+	}
+}
+
+func TestComputeCodeChallenge(t *testing.T) {
+	// Known test vector: SHA256("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk") from RFC 7636 example.
+	// We use our own deterministic input to verify the encoding.
+	verifier := "abc123"
+	// SHA256("abc123") = 6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090
+	// base64url (no padding): bKE9UsqwyIjg8Au1AeQlie..."
+	got := mcp.ComputeCodeChallenge(verifier)
+	if got == "" {
+		t.Fatal("expected non-empty challenge")
+	}
+	// Verify it is valid base64url (no padding characters).
+	for _, c := range got {
+		if c == '+' || c == '/' || c == '=' {
+			t.Fatalf("challenge %q contains non-base64url character %c", got, c)
+		}
+	}
+	// Verify deterministic: same verifier always gives same challenge.
+	got2 := mcp.ComputeCodeChallenge(verifier)
+	if got != got2 {
+		t.Fatal("ComputeCodeChallenge is not deterministic")
+	}
+}
+
+func TestValidateResourceIndicator_Match(t *testing.T) {
+	// Build a minimal JWT with aud = "https://mcp.example.com"
+	// Header: {"alg":"none"} -> eyJhbGciOiJub25lIn0
+	// Payload: {"aud":"https://mcp.example.com","sub":"test"}
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"aud":"https://mcp.example.com","sub":"test"}`))
+	token := header + "." + payload + ".sig"
+
+	if err := mcp.ValidateResourceIndicator(token, "https://mcp.example.com"); err != nil {
+		t.Fatalf("expected nil error for matching aud, got: %v", err)
+	}
+}
+
+func TestValidateResourceIndicator_MatchSlice(t *testing.T) {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"aud":["https://other.example.com","https://mcp.example.com"],"sub":"test"}`))
+	token := header + "." + payload + ".sig"
+
+	if err := mcp.ValidateResourceIndicator(token, "https://mcp.example.com"); err != nil {
+		t.Fatalf("expected nil error for aud slice containing resource, got: %v", err)
+	}
+}
+
+func TestValidateResourceIndicator_Mismatch(t *testing.T) {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"aud":"https://other.example.com","sub":"test"}`))
+	token := header + "." + payload + ".sig"
+
+	if err := mcp.ValidateResourceIndicator(token, "https://mcp.example.com"); err == nil {
+		t.Fatal("expected error for mismatched aud, got nil")
+	}
+}
+
+func TestMiddleware_WWWAuthenticate_WithOAuth(t *testing.T) {
+	eng, _, _ := newMiddlewareEngine(t)
+	oauthCfg := &mcp.OAuthConfig{
+		ResourceIndicator: "https://mcp.example.com",
+	}
+	m := mcp.NewMiddlewareWithOAuth(eng, mcp.NewToolCapabilityMap(), oauthCfg)
+
+	handler := m.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// No token → 401 with WWW-Authenticate.
+	body, _ := json.Marshal(map[string]string{"tool": "read_file"})
+	req := httptest.NewRequest(http.MethodPost, "/mcp/call", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+	wwwAuth := w.Header().Get("WWW-Authenticate")
+	if wwwAuth == "" {
+		t.Fatal("expected WWW-Authenticate header to be set")
+	}
+	if !strings.Contains(wwwAuth, `resource="https://mcp.example.com"`) {
+		t.Fatalf("WWW-Authenticate header %q does not contain expected resource", wwwAuth)
+	}
+	if !strings.Contains(wwwAuth, `Bearer`) {
+		t.Fatalf("WWW-Authenticate header %q does not start with Bearer", wwwAuth)
 	}
 }

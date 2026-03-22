@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agentity Admin — Dashboard</title>
+  <link rel="stylesheet" href="/admin/static/style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="sidebar-logo">Agent<span>ity</span></div>
+    <nav>
+      <a href="/admin/" class="active"><span class="icon">&#9632;</span> Dashboard</a>
+      <a href="/admin/agents.html"><span class="icon">&#9675;</span> Agents</a>
+      <a href="/admin/tokens.html"><span class="icon">&#128273;</span> Token Inspector</a>
+      <a href="/admin/policies.html"><span class="icon">&#128220;</span> Policies</a>
+      <a href="/admin/audit.html"><span class="icon">&#128196;</span> Audit Log</a>
+    </nav>
+  </aside>
+
+  <div class="main">
+    <header class="header">
+      <h1>Dashboard</h1>
+      <div class="api-key-group">
+        <label for="api-key-input">Admin API Key</label>
+        <input type="password" id="api-key-input" placeholder="Enter admin API key…">
+        <button class="btn btn-secondary" id="api-key-save">Save</button>
+      </div>
+    </header>
+
+    <div class="content">
+      <div class="cards-row">
+        <div class="card">
+          <div class="card-title">Agents</div>
+          <div class="stat-value" id="stat-agents">—</div>
+          <div class="stat-label">registered agents</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Policies</div>
+          <div class="stat-value" id="stat-policies">—</div>
+          <div class="stat-label">active policies</div>
+        </div>
+      </div>
+
+      <div class="table-wrapper">
+        <div class="table-toolbar">
+          <span class="table-toolbar-title">Recent Audit Events</span>
+          <a href="/admin/audit.html" class="btn btn-secondary">View All</a>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Actor</th>
+              <th>Target</th>
+              <th>Outcome</th>
+              <th>Timestamp</th>
+            </tr>
+          </thead>
+          <tbody id="recent-audit-body">
+            <tr class="empty-row"><td colspan="5">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="/admin/static/app.js"></script>
+  <script src="/admin/static/dashboard.js"></script>
+</body>
+</html>

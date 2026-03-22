@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agentity Admin — Token Inspector</title>
+  <link rel="stylesheet" href="/admin/static/style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="sidebar-logo">Agent<span>ity</span></div>
+    <nav>
+      <a href="/admin/"><span class="icon">&#9632;</span> Dashboard</a>
+      <a href="/admin/agents.html"><span class="icon">&#9675;</span> Agents</a>
+      <a href="/admin/tokens.html" class="active"><span class="icon">&#128273;</span> Token Inspector</a>
+      <a href="/admin/policies.html"><span class="icon">&#128220;</span> Policies</a>
+      <a href="/admin/audit.html"><span class="icon">&#128196;</span> Audit Log</a>
+    </nav>
+  </aside>
+
+  <div class="main">
+    <header class="header">
+      <h1>Token Inspector</h1>
+      <div class="api-key-group">
+        <label for="api-key-input">Admin API Key</label>
+        <input type="password" id="api-key-input" placeholder="Enter admin API key…">
+        <button class="btn btn-secondary" id="api-key-save">Save</button>
+      </div>
+    </header>
+
+    <div class="content">
+      <div class="card">
+        <div class="card-title">Paste Encoded ACT Token</div>
+        <div class="decode-area">
+          <textarea id="token-input" placeholder="Paste base64url-encoded ACT token here… (Ctrl+Enter to decode)"></textarea>
+          <div style="display:flex;gap:10px">
+            <button class="btn btn-primary" id="decode-btn">Decode</button>
+            <button class="btn btn-secondary" id="clear-btn">Clear</button>
+          </div>
+          <p id="decode-error" style="color:var(--deny);font-size:13px"></p>
+        </div>
+      </div>
+
+      <div id="token-chain" class="token-chain"></div>
+
+      <div id="raw-section" style="margin-top:20px">
+        <div class="card" style="padding:16px">
+          <div class="card-title">Raw JSON</div>
+          <pre id="raw-output" style="font-size:12px;overflow:auto;white-space:pre-wrap;word-break:break-all;max-height:300px;margin-top:8px"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/admin/static/app.js"></script>
+  <script src="/admin/static/tokens.js"></script>
+</body>
+</html>

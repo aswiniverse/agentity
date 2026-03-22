@@ -134,8 +134,9 @@ func VerifyToolCall(
 
 // Middleware provides HTTP middleware for MCP server authentication.
 type Middleware struct {
-	engine *delegation.Engine
-	capMap *ToolCapabilityMap
+	engine      *delegation.Engine
+	capMap      *ToolCapabilityMap
+	OAuthConfig *OAuthConfig // optional; when set, 401 responses include WWW-Authenticate with resource indicator
 }
 
 // NewMiddleware creates a new MCP auth middleware.
@@ -144,6 +145,15 @@ func NewMiddleware(engine *delegation.Engine, capMap *ToolCapabilityMap) *Middle
 		capMap = NewToolCapabilityMap()
 	}
 	return &Middleware{engine: engine, capMap: capMap}
+}
+
+// NewMiddlewareWithOAuth creates a new MCP auth middleware with OAuth 2.1 configuration.
+// When a 401 is returned, the response includes a WWW-Authenticate header with the resource indicator.
+func NewMiddlewareWithOAuth(engine *delegation.Engine, capMap *ToolCapabilityMap, oauthConfig *OAuthConfig) *Middleware {
+	if capMap == nil {
+		capMap = NewToolCapabilityMap()
+	}
+	return &Middleware{engine: engine, capMap: capMap, OAuthConfig: oauthConfig}
 }
 
 // Handler wraps an MCP HTTP handler with ACT token authentication.
@@ -189,6 +199,12 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 
 		result, err := VerifyToolCall(r.Context(), m.engine, encodedToken, req.Tool, m.capMap)
 		if err != nil {
+			if m.OAuthConfig != nil && m.OAuthConfig.ResourceIndicator != "" {
+				w.Header().Set("WWW-Authenticate", fmt.Sprintf(
+					`Bearer realm="agentity", resource="%s"`,
+					m.OAuthConfig.ResourceIndicator,
+				))
+			}
 			writeMCPError(w, http.StatusUnauthorized, "unauthorized", err.Error())
 			return
 		}

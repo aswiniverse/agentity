@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agentity Admin — Policies</title>
+  <link rel="stylesheet" href="/admin/static/style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="sidebar-logo">Agent<span>ity</span></div>
+    <nav>
+      <a href="/admin/"><span class="icon">&#9632;</span> Dashboard</a>
+      <a href="/admin/agents.html"><span class="icon">&#9675;</span> Agents</a>
+      <a href="/admin/tokens.html"><span class="icon">&#128273;</span> Token Inspector</a>
+      <a href="/admin/policies.html" class="active"><span class="icon">&#128220;</span> Policies</a>
+      <a href="/admin/audit.html"><span class="icon">&#128196;</span> Audit Log</a>
+    </nav>
+  </aside>
+
+  <div class="main">
+    <header class="header">
+      <h1>Policies</h1>
+      <div class="api-key-group">
+        <label for="api-key-input">Admin API Key</label>
+        <input type="password" id="api-key-input" placeholder="Enter admin API key…">
+        <button class="btn btn-secondary" id="api-key-save">Save</button>
+      </div>
+    </header>
+
+    <div class="content">
+      <div class="table-wrapper">
+        <div class="table-toolbar">
+          <span class="table-toolbar-title">Access Policies</span>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-secondary" id="refresh-btn">&#8635; Refresh</button>
+            <button class="btn btn-primary" id="add-policy-btn">+ Add Policy</button>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Expression</th>
+              <th>Action</th>
+              <th>Priority</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="policies-body">
+            <tr class="empty-row"><td colspan="5">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Policy modal -->
+  <div class="modal-overlay hidden" id="add-modal">
+    <div class="modal">
+      <div class="modal-title">Add Policy</div>
+      <form id="policy-form">
+        <div class="form-group">
+          <label for="p-name">Name</label>
+          <input type="text" id="p-name" placeholder="e.g. deny-read-secrets" required>
+        </div>
+        <div class="form-group">
+          <label for="p-expression">Expression (CEL)</label>
+          <textarea id="p-expression" placeholder='e.g. "secrets:read" in token.capabilities' required></textarea>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="p-action">Action</label>
+            <select id="p-action">
+              <option value="allow">Allow</option>
+              <option value="deny">Deny</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="p-priority">Priority</label>
+            <input type="number" id="p-priority" value="0" min="0">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="cancel-policy-btn">Cancel</button>
+          <button type="submit" class="btn btn-primary">Create Policy</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/admin/static/app.js"></script>
+  <script src="/admin/static/policies.js"></script>
+</body>
+</html>
