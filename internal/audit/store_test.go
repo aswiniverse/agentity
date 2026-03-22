@@ -99,7 +99,7 @@ func TestMockStore_InsertAndList(t *testing.T) {
 func TestMockStore_Count(t *testing.T) {
 	ms := &mockStore{}
 	for i := 0; i < 3; i++ {
-		ms.Insert(&audit.AuditEntry{ID: "id", Type: audit.EventTokenIssued, ActorID: "a", Action: "x", Outcome: "ok"})
+		_ = ms.Insert(&audit.AuditEntry{ID: "id", Type: audit.EventTokenIssued, ActorID: "a", Action: "x", Outcome: "ok"})
 	}
 	n, err := ms.Count()
 	if err != nil {

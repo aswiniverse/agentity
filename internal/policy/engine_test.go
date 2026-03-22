@@ -64,8 +64,8 @@ func TestAddPolicy_NonBoolExpression(t *testing.T) {
 
 func TestListPolicies(t *testing.T) {
 	e := newEngine(t)
-	e.AddPolicy("p1", `true`, "allow", 5)
-	e.AddPolicy("p2", `false`, "deny", 10)
+	_, _ = e.AddPolicy("p1", `true`, "allow", 5)
+	_, _ = e.AddPolicy("p2", `false`, "deny", 10)
 
 	policies := e.ListPolicies()
 	if len(policies) != 2 {
@@ -112,7 +112,7 @@ func TestEvaluate_NoPolicies_DefaultAllow(t *testing.T) {
 
 func TestEvaluate_AllowPolicy_Matches(t *testing.T) {
 	e := newEngine(t)
-	e.AddPolicy("allow-read", `"read" in capabilities`, "allow", 0)
+	_, _ = e.AddPolicy("allow-read", `"read" in capabilities`, "allow", 0)
 
 	allowed, _, err := e.Evaluate(context.Background(), policy.PolicyInput{
 		Capabilities: []string{"read"},

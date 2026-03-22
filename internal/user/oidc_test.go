@@ -39,7 +39,7 @@ func TestVerifyOIDCToken(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(keys)
+		_ = json.NewEncoder(w).Encode(keys)
 	}))
 	defer jwksServer.Close()
 

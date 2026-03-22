@@ -78,7 +78,7 @@ func TestKeyResolver_CacheHitAvoidsStoreOnSecondCall(t *testing.T) {
 	kp, _ := agcrypto.GenerateKeyPair()
 	pubKey := agcrypto.EncodePublicKeyBase64(kp.PublicKey)
 	agent := newAgent("agent://cache", kp.KeyID, pubKey)
-	s.CreateAgent(agent)
+	_ = s.CreateAgent(agent)
 
 	// First call populates cache.
 	first, err := r.ResolveKey(kp.KeyID)
@@ -87,7 +87,7 @@ func TestKeyResolver_CacheHitAvoidsStoreOnSecondCall(t *testing.T) {
 	}
 
 	// Remove agent from store — second call must still succeed from cache.
-	s.DeleteAgent("agent://cache")
+	_ = s.DeleteAgent("agent://cache")
 	second, err := r.ResolveKey(kp.KeyID)
 	if err != nil {
 		t.Fatalf("second resolve (from cache): %v", err)
@@ -108,10 +108,10 @@ func TestKeyResolver_InvalidateCacheForcesFreshLookup(t *testing.T) {
 	s.CreateAgent(agent)
 
 	// Populate cache.
-	r.ResolveKey(kp.KeyID)
+	_, _ = r.ResolveKey(kp.KeyID)
 
 	// Delete agent from store then invalidate — next call should fail (not cached).
-	s.DeleteAgent("agent://invalidate")
+	_ = s.DeleteAgent("agent://invalidate")
 	r.InvalidateCache(kp.KeyID)
 
 	_, err := r.ResolveKey(kp.KeyID)
@@ -152,7 +152,7 @@ func TestKeyResolver_KeyRotationUpdatesCache(t *testing.T) {
 	pub2 := agcrypto.EncodePublicKeyBase64(kp2.PublicKey)
 	agent.KeyID = kp2.KeyID
 	agent.PublicKey = pub2
-	s.UpdateAgent(agent)
+	_ = s.UpdateAgent(agent)
 	r.InvalidateCache(kp1.KeyID)
 
 	// Old key ID should no longer resolve.

@@ -115,15 +115,14 @@ func TestToolCapabilityMap_Chaining(t *testing.T) {
 // VerifyToolCall tests
 
 func TestVerifyToolCall_ValidToken(t *testing.T) {
-	eng, ks := newEngine(t)
+	_, ks := newEngine(t)
 	agentStore := store.NewMemoryStore()
 
 	// Re-create engine with the same store for agent lookup.
-	ks2 := ks
 	revReg := revocation.NewRegistry(nil)
-	auditLog := audit.NewLogger(ks2.PrivateKey(), nil)
-	keyResolver := delegation.NewKeyResolver(ks2, agentStore)
-	eng = delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
+	auditLog := audit.NewLogger(ks.PrivateKey(), nil)
+	keyResolver := delegation.NewKeyResolver(ks, agentStore)
+	eng := delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
 
 	encodedToken, _ := registerAndIssueToken(t, ks, agentStore, []string{"read_file", "write_file"})
 
@@ -149,12 +148,12 @@ func TestVerifyToolCall_EmptyToken(t *testing.T) {
 }
 
 func TestVerifyToolCall_MissingCapability(t *testing.T) {
-	eng, ks := newEngine(t)
+	_, ks := newEngine(t)
 	agentStore := store.NewMemoryStore()
 	revReg := revocation.NewRegistry(nil)
 	auditLog := audit.NewLogger(ks.PrivateKey(), nil)
 	keyResolver := delegation.NewKeyResolver(ks, agentStore)
-	eng = delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
+	eng := delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
 
 	// Token only has "read_file".
 	encodedToken, _ := registerAndIssueToken(t, ks, agentStore, []string{"read_file"})
@@ -175,12 +174,12 @@ func TestVerifyToolCall_InvalidToken(t *testing.T) {
 }
 
 func TestVerifyToolCall_ExplicitCapabilityMapping(t *testing.T) {
-	eng, ks := newEngine(t)
+	_, ks := newEngine(t)
 	agentStore := store.NewMemoryStore()
 	revReg := revocation.NewRegistry(nil)
 	auditLog := audit.NewLogger(ks.PrivateKey(), nil)
 	keyResolver := delegation.NewKeyResolver(ks, agentStore)
-	eng = delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
+	eng := delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
 
 	// Token has "read_file" capability.
 	encodedToken, _ := registerAndIssueToken(t, ks, agentStore, []string{"read_file"})

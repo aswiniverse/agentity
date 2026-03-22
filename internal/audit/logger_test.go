@@ -78,8 +78,8 @@ func TestAuditLogger_Count(t *testing.T) {
 	if l.Count() != 0 {
 		t.Fatal("expected count=0 on empty logger")
 	}
-	l.Log(audit.EventTokenIssued, "a", "b", "issue", "success", nil)
-	l.Log(audit.EventTokenVerified, "a", "b", "verify", "success", nil)
+	_, _ = l.Log(audit.EventTokenIssued, "a", "b", "issue", "success", nil)
+	_, _ = l.Log(audit.EventTokenVerified, "a", "b", "verify", "success", nil)
 	if l.Count() != 2 {
 		t.Fatalf("expected count=2, got %d", l.Count())
 	}
@@ -88,7 +88,7 @@ func TestAuditLogger_Count(t *testing.T) {
 func TestAuditLogger_List(t *testing.T) {
 	l := newLogger(t)
 	for i := 0; i < 5; i++ {
-		l.Log(audit.EventTokenIssued, "a", "b", "issue", "success", nil)
+		_, _ = l.Log(audit.EventTokenIssued, "a", "b", "issue", "success", nil)
 	}
 	entries := l.List(audit.AuditFilter{Limit: 3})
 	if len(entries) != 3 {
@@ -103,7 +103,7 @@ func TestAuditLogger_List(t *testing.T) {
 func TestAuditLogger_ListOffset(t *testing.T) {
 	l := newLogger(t)
 	for i := 0; i < 5; i++ {
-		l.Log(audit.EventTokenIssued, "a", "b", "issue", "success", nil)
+		_, _ = l.Log(audit.EventTokenIssued, "a", "b", "issue", "success", nil)
 	}
 	entries := l.List(audit.AuditFilter{Offset: 3, Limit: 10})
 	if len(entries) != 2 {
@@ -134,7 +134,7 @@ func TestAuditLogger_ConcurrentWrites(t *testing.T) {
 	done := make(chan struct{})
 	for i := 0; i < 20; i++ {
 		go func() {
-			l.Log(audit.EventTokenIssued, "a", "b", "issue", "success", nil)
+			_, _ = l.Log(audit.EventTokenIssued, "a", "b", "issue", "success", nil)
 			done <- struct{}{}
 		}()
 	}
@@ -150,8 +150,8 @@ func TestAuditLogger_ConcurrentWrites(t *testing.T) {
 // in-memory log is used and List works correctly.
 func TestAuditLogger_NilStore_InMemoryFallback(t *testing.T) {
 	l := newLogger(t) // store=nil
-	l.Log(audit.EventTokenIssued, "actor-1", "target-1", "issue", "success", nil)
-	l.Log(audit.EventTokenVerified, "actor-2", "target-2", "verify", "success", nil)
+	_, _ = l.Log(audit.EventTokenIssued, "actor-1", "target-1", "issue", "success", nil)
+	_, _ = l.Log(audit.EventTokenVerified, "actor-2", "target-2", "verify", "success", nil)
 
 	entries := l.List(audit.AuditFilter{Limit: 10})
 	if len(entries) != 2 {
@@ -167,7 +167,7 @@ func TestAuditLogger_WriteThrough(t *testing.T) {
 	ms := &mockStore{}
 	l := newLoggerWithStore(t, ms)
 
-	l.Log(audit.EventTokenIssued, "actor-1", "target-1", "issue", "success", nil)
+	_, _ = l.Log(audit.EventTokenIssued, "actor-1", "target-1", "issue", "success", nil)
 
 	// Give the goroutine time to complete.
 	deadline := time.Now().Add(2 * time.Second)
@@ -188,7 +188,7 @@ func TestAuditLogger_ListFromStore(t *testing.T) {
 	ms := &mockStore{}
 	l := newLoggerWithStore(t, ms)
 
-	l.Log(audit.EventTokenIssued, "actor-store", "target-1", "issue", "success", nil)
+	_, _ = l.Log(audit.EventTokenIssued, "actor-store", "target-1", "issue", "success", nil)
 
 	// Wait for write-through goroutine.
 	deadline := time.Now().Add(2 * time.Second)
@@ -220,7 +220,7 @@ func TestAuditLogger_RetryOnFailure(t *testing.T) {
 	}
 	l := newLoggerWithStore(t, ms)
 
-	l.Log(audit.EventTokenIssued, "actor-retry", "target-1", "issue", "success", nil)
+	_, _ = l.Log(audit.EventTokenIssued, "actor-retry", "target-1", "issue", "success", nil)
 
 	// Wait for retry logic (2 retries × 100ms sleep + buffer).
 	deadline := time.Now().Add(2 * time.Second)
