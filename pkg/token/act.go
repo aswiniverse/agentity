@@ -191,6 +191,9 @@ func canonicalBlockBytes(block *Block) ([]byte, error) {
 		"iat":   block.IssuedAt,
 		"kid":   block.SignerKeyID,
 	}
+	if block.UserID != "" {
+		m["uid"] = block.UserID
+	}
 	return canonicalJSON(m)
 }
 

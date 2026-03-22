@@ -40,6 +40,7 @@ func main() {
 	rootCmd.AddCommand(agentsCmd())
 	rootCmd.AddCommand(tokensCmd())
 	rootCmd.AddCommand(adminCmd())
+	rootCmd.AddCommand(auditCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -350,6 +351,37 @@ func adminCmd() *cobra.Command {
 
 	policiesCmd.AddCommand(policiesListCmd, policiesCreateCmd)
 	cmd.AddCommand(statsCmd, policiesCmd)
+	return cmd
+}
+
+func auditCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "audit",
+		Short: "Audit log operations",
+	}
+
+	var limit int
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List audit log entries",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			if err := requireAdminKey(); err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			path := fmt.Sprintf("/api/v1/audit?limit=%d", limit)
+			resp, err := doRawGet(ctx, path)
+			if err != nil {
+				return err
+			}
+			printJSON(resp)
+			return nil
+		},
+	}
+	listCmd.Flags().IntVar(&limit, "limit", 20, "Maximum number of audit entries to return")
+
+	cmd.AddCommand(listCmd)
 	return cmd
 }
 

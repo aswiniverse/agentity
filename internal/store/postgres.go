@@ -36,6 +36,11 @@ func NewPostgresStore(ctx context.Context, dsn string, maxConns int) (*PostgresS
 	return &PostgresStore{pool: pool}, nil
 }
 
+// Pool returns the underlying pgxpool.Pool for use by other store implementations.
+func (s *PostgresStore) Pool() *pgxpool.Pool {
+	return s.pool
+}
+
 // Close closes the connection pool.
 func (s *PostgresStore) Close() {
 	s.pool.Close()

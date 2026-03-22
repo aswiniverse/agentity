@@ -51,7 +51,7 @@ func newTestServer(t *testing.T) *testServer {
 
 	agentStore := store.NewMemoryStore()
 	revReg := revocation.NewRegistry(nil) // nil = in-memory only
-	auditLog := audit.NewLogger(rootKeyStore.PrivateKey())
+	auditLog := audit.NewLogger(rootKeyStore.PrivateKey(), nil)
 	idService := identity.NewService(agentStore)
 	keyResolver := delegation.NewKeyResolver(rootKeyStore, agentStore)
 	delegEngine := delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)

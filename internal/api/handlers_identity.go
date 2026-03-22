@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/agentity/agentity/internal/delegation"
 	"github.com/agentity/agentity/internal/identity"
 	"github.com/agentity/agentity/internal/metrics"
 	"github.com/agentity/agentity/internal/revocation"
@@ -13,13 +14,14 @@ import (
 
 // IdentityHandlers provides HTTP handlers for agent identity management.
 type IdentityHandlers struct {
-	service *identity.Service
-	revReg  *revocation.Registry
+	service     *identity.Service
+	revReg      *revocation.Registry
+	keyResolver *delegation.KeyResolverImpl
 }
 
 // NewIdentityHandlers creates new identity handlers.
-func NewIdentityHandlers(service *identity.Service, revReg *revocation.Registry) *IdentityHandlers {
-	return &IdentityHandlers{service: service, revReg: revReg}
+func NewIdentityHandlers(service *identity.Service, revReg *revocation.Registry, keyResolver *delegation.KeyResolverImpl) *IdentityHandlers {
+	return &IdentityHandlers{service: service, revReg: revReg, keyResolver: keyResolver}
 }
 
 // RegisterAgent handles POST /api/v1/agents
@@ -163,10 +165,23 @@ func (h *IdentityHandlers) RotateKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	agentID := "agent://" + id
 
+	// Capture the old key ID before rotation so we can invalidate the cache.
+	existingAgent, err := h.service.GetAgent(agentID)
+	if err != nil {
+		writeProblem(w, http.StatusNotFound, "https://agentity.dev/errors/not-found", "Not Found", err.Error())
+		return
+	}
+	oldKeyID := existingAgent.KeyID
+
 	agent, privateKey, err := h.service.RotateKey(agentID)
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/rotate-failed", "Key Rotation Failed", err.Error())
 		return
+	}
+
+	// Invalidate the cached public key so post-rotation verifications resolve the new key.
+	if h.keyResolver != nil {
+		h.keyResolver.InvalidateCache(oldKeyID)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{

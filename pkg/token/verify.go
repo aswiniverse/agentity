@@ -144,12 +144,19 @@ func Verify(encoded string, keyResolver KeyResolver, revocationCheck RevocationC
 	// The final subject is the last block's subject.
 	lastBlock := act.Blocks[len(act.Blocks)-1]
 
-	return &VerifiedACT{
+	verified := &VerifiedACT{
 		TokenID:        act.TokenID,
 		AgentID:        lastBlock.Subject,
 		Capabilities:   caps,
 		ExpiresAt:      lastBlock.Conditions.ExpiresAt,
 		ChainDepth:     len(act.Blocks),
 		DelegationPath: delegationPath,
-	}, nil
+	}
+
+	// Populate UserID from the root block if present.
+	if act.Blocks[0].UserID != "" {
+		verified.UserID = act.Blocks[0].UserID
+	}
+
+	return verified, nil
 }

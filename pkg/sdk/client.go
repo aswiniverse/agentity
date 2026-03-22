@@ -3,6 +3,7 @@ package sdk
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -104,22 +105,48 @@ func (c *Client) IssueToken(ctx context.Context, req IssueTokenRequest) (string,
 	return resp.Token, nil
 }
 
-// DelegateTokenRequest is the input for delegating a token.
-type DelegateTokenRequest struct {
-	ParentToken    string               `json:"parent_token"`
-	ChildAgentID   string               `json:"child_agent_id"`
-	Capabilities   []string             `json:"capabilities"`
-	Conditions     token.BlockConditions `json:"conditions"`
-	ParentAgentKey string               `json:"parent_agent_key"`
+// submitDelegatedTokenRequest is the body sent when submitting a pre-signed delegated token.
+type submitDelegatedTokenRequest struct {
+	DelegatedToken string `json:"delegated_token"`
 }
 
-// DelegateToken delegates a parent token to a child agent.
-func (c *Client) DelegateToken(ctx context.Context, req DelegateTokenRequest) (string, error) {
-	var resp IssueTokenResponse
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/tokens/delegate", req, &resp); err != nil {
-		return "", err
+// SubmitDelegatedToken posts a pre-signed, locally-built delegated token to the server.
+// The private key never leaves the caller's process.
+func (c *Client) SubmitDelegatedToken(ctx context.Context, encodedToken string) error {
+	body := submitDelegatedTokenRequest{DelegatedToken: encodedToken}
+	return c.doJSON(ctx, http.MethodPost, "/api/v1/tokens/delegate", body, nil)
+}
+
+// DelegateTokenLocally signs a delegation block locally using the caller's private key
+// and submits the resulting token to the server. No private key is sent over the wire.
+func (c *Client) DelegateTokenLocally(
+	ctx context.Context,
+	parentToken string,
+	childAgentID string,
+	capabilities []string,
+	conditions token.BlockConditions,
+	parentPrivateKey ed25519.PrivateKey,
+) (string, error) {
+	parentACT, err := token.Decode(parentToken)
+	if err != nil {
+		return "", fmt.Errorf("decode parent token: %w", err)
 	}
-	return resp.Token, nil
+
+	delegatedACT, err := token.Delegate(parentACT, childAgentID, capabilities, conditions, parentPrivateKey)
+	if err != nil {
+		return "", fmt.Errorf("delegate token: %w", err)
+	}
+
+	encodedToken, err := token.Encode(delegatedACT)
+	if err != nil {
+		return "", fmt.Errorf("encode delegated token: %w", err)
+	}
+
+	if err := c.SubmitDelegatedToken(ctx, encodedToken); err != nil {
+		return "", fmt.Errorf("submit delegated token: %w", err)
+	}
+
+	return encodedToken, nil
 }
 
 // VerifyTokenResponse contains the verified token details.

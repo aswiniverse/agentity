@@ -14,6 +14,7 @@ import (
 	"github.com/agentity/agentity/internal/revocation"
 	"github.com/agentity/agentity/internal/server"
 	"github.com/agentity/agentity/internal/store"
+	"github.com/agentity/agentity/internal/user"
 	agcrypto "github.com/agentity/agentity/pkg/crypto"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
@@ -112,17 +113,20 @@ func runServer(configFile string, devMode bool, port int, logLevel string) error
 	// M8 fix: select the store backend based on configuration.
 	var agentStore identity.Store
 	var readinessCheck func() error
+	var pgStore *store.PostgresStore
 
+	var auditStore audit.AuditStore
 	switch cfg.Store.Type {
 	case "postgres":
 		if cfg.Store.DSN == "" {
 			return fmt.Errorf("store.dsn must be set when store.type=postgres")
 		}
-		pgStore, err := store.NewPostgresStore(context.Background(), cfg.Store.DSN, cfg.Store.MaxConns)
+		pgStore, err = store.NewPostgresStore(context.Background(), cfg.Store.DSN, cfg.Store.MaxConns)
 		if err != nil {
 			return fmt.Errorf("connect to postgres: %w", err)
 		}
 		agentStore = pgStore
+		auditStore = audit.NewPostgresAuditStore(pgStore.Pool())
 		readinessCheck = func() error { return pgStore.Ping(context.Background()) }
 		logger.Info().Str("dsn_host", extractHost(cfg.Store.DSN)).Msg("using postgres store")
 	default:
@@ -146,15 +150,36 @@ func runServer(configFile string, devMode bool, port int, logLevel string) error
 	revReg := revocation.NewRegistry(redisClient)
 
 	// Initialize services.
-	auditLog := audit.NewLogger(rootKeyStore.PrivateKey())
+	auditLog := audit.NewLogger(rootKeyStore.PrivateKey(), auditStore)
 	idService := identity.NewService(agentStore)
 	keyResolver := delegation.NewKeyResolver(rootKeyStore, agentStore)
 	delegEngine := delegation.NewEngine(agentStore, revReg, auditLog, keyResolver)
 
-	policyEngine, err := policy.NewEngine()
-	if err != nil {
-		return fmt.Errorf("create policy engine: %w", err)
+	var policyEngine *policy.Engine
+	if pgStore != nil {
+		policyStore := policy.NewPostgresPolicyStore(pgStore.Pool())
+		policyEngine, err = policy.NewEngineWithStore(policyStore)
+		if err != nil {
+			return fmt.Errorf("create policy engine: %w", err)
+		}
+		if loadErr := policyEngine.LoadFromStore(context.Background()); loadErr != nil {
+			logger.Error().Err(loadErr).Msg("failed to load policies from store; enforcing deny-all until store recovers")
+		}
+	} else {
+		policyEngine, err = policy.NewEngine()
+		if err != nil {
+			return fmt.Errorf("create policy engine: %w", err)
+		}
 	}
+
+	// Initialize user store and service.
+	var userStore user.UserStore
+	if pgStore != nil {
+		userStore = user.NewPostgresUserStore(pgStore.Pool())
+	} else {
+		userStore = user.NewMemoryUserStore()
+	}
+	userService := user.NewUserService(userStore)
 
 	// Build router.
 	router := api.NewRouter(api.RouterConfig{
@@ -165,7 +190,10 @@ func runServer(configFile string, devMode bool, port int, logLevel string) error
 		RevocationReg:    revReg,
 		PolicyEngine:     policyEngine,
 		AuditLogger:      auditLog,
+		KeyResolver:      keyResolver,
+		UserService:      userService,
 		AdminAPIKey:      cfg.Auth.AdminAPIKey,
+		IssuerURL:        cfg.OIDC.IssuerURL,
 		AllowedOrigins:   []string{"*"}, // restrict in production via config
 		ReadinessCheck:   readinessCheck,
 	})

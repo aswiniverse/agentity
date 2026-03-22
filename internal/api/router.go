@@ -10,6 +10,7 @@ import (
 	"github.com/agentity/agentity/internal/identity"
 	"github.com/agentity/agentity/internal/policy"
 	"github.com/agentity/agentity/internal/revocation"
+	"github.com/agentity/agentity/internal/user"
 	agcrypto "github.com/agentity/agentity/pkg/crypto"
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -26,6 +27,8 @@ type RouterConfig struct {
 	RevocationReg    *revocation.Registry
 	PolicyEngine     *policy.Engine
 	AuditLogger      *audit.Logger
+	KeyResolver      *delegation.KeyResolverImpl
+	UserService      *user.UserService
 	AdminAPIKey      string
 	IssuerURL        string
 	// AllowedOrigins controls CORS. Use ["*"] for dev, explicit origins for prod.
@@ -99,7 +102,7 @@ func NewRouter(cfg RouterConfig) *chi.Mux {
 		r.Use(AdminAuthMiddleware(cfg.AdminAPIKey))
 
 		// Identity endpoints.
-		idHandlers := NewIdentityHandlers(cfg.IdentityService, cfg.RevocationReg)
+		idHandlers := NewIdentityHandlers(cfg.IdentityService, cfg.RevocationReg, cfg.KeyResolver)
 		r.Post("/agents", idHandlers.RegisterAgent)
 		r.Get("/agents", idHandlers.ListAgents)
 		r.Get("/agents/{id}", idHandlers.GetAgent)
@@ -118,12 +121,22 @@ func NewRouter(cfg RouterConfig) *chi.Mux {
 			cfg.AuditLogger,
 			cfg.IdentityService,
 			cfg.PolicyEngine,
+			cfg.UserService,
 		)
 		r.Post("/tokens/issue", tokenHandlers.IssueToken)
 		r.Post("/tokens/delegate", tokenHandlers.SubmitDelegatedToken)
 		r.Post("/tokens/verify", tokenHandlers.VerifyToken)
 		r.Post("/tokens/revoke", tokenHandlers.RevokeToken)
 		r.Get("/tokens/{id}/chain", tokenHandlers.GetChain)
+
+		// User binding endpoints.
+		if cfg.UserService != nil {
+			userHandlers := NewUserHandlers(cfg.UserService)
+			r.Post("/users/bind", userHandlers.BindUser)
+			r.Get("/users/{id}/agents", userHandlers.ListUserAgents)
+			r.Delete("/users/{id}/agents/{agent_id}", userHandlers.RevokeUserAgent)
+			r.Post("/admin/oidc-providers", userHandlers.RegisterOIDCProvider)
+		}
 
 		// Admin endpoints.
 		adminHandlers := NewAdminHandlers(cfg.IdentityService, cfg.PolicyEngine, cfg.RevocationReg, cfg.AuditLogger)

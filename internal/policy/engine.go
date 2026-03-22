@@ -42,13 +42,21 @@ type EvaluationResult struct {
 
 // Engine evaluates CEL-based policies.
 type Engine struct {
-	mu       sync.RWMutex
-	policies []Policy
-	env      *cel.Env
+	mu          sync.RWMutex
+	policies    []Policy
+	compiled    map[string]cel.Program
+	env         *cel.Env
+	store       PolicyStore
+	storeFailed bool // true when LoadFromStore failed; causes Evaluate to deny-all
 }
 
-// NewEngine creates a new policy engine with CEL environment.
+// NewEngine creates a new policy engine with CEL environment and no backing store.
 func NewEngine() (*Engine, error) {
+	return NewEngineWithStore(nil)
+}
+
+// NewEngineWithStore creates a new policy engine with an optional backing store.
+func NewEngineWithStore(store PolicyStore) (*Engine, error) {
 	env, err := cel.NewEnv(
 		cel.Variable("agent_id", cel.StringType),
 		cel.Variable("agent_model", cel.StringType),
@@ -64,8 +72,43 @@ func NewEngine() (*Engine, error) {
 	}
 	return &Engine{
 		policies: make([]Policy, 0),
+		compiled: make(map[string]cel.Program),
 		env:      env,
+		store:    store,
 	}, nil
+}
+
+// LoadFromStore loads all policies from the backing store into memory.
+// Returns an error if the store is set and ListAll fails.
+func (e *Engine) LoadFromStore(ctx context.Context) error {
+	if e.store == nil {
+		return nil
+	}
+	policies, err := e.store.ListAll()
+	if err != nil {
+		e.mu.Lock()
+		e.storeFailed = true
+		e.mu.Unlock()
+		return fmt.Errorf("load policies from store: %w", err)
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	for _, p := range policies {
+		ast, issues := e.env.Compile(p.Expression)
+		if issues != nil && issues.Err() != nil {
+			return fmt.Errorf("compile policy %q expression: %w", p.Name, issues.Err())
+		}
+		prg, err := e.env.Program(ast)
+		if err != nil {
+			return fmt.Errorf("build program for policy %q: %w", p.Name, err)
+		}
+		e.compiled[p.ID] = prg
+		e.policies = append(e.policies, p)
+	}
+	// Policies from store are already ordered by priority DESC (ListAll guarantees this).
+	return nil
 }
 
 // AddPolicy compiles and adds a policy to the engine.
@@ -84,6 +127,11 @@ func (e *Engine) AddPolicy(name, expression, action string, priority int) (*Poli
 		return nil, fmt.Errorf("CEL expression must evaluate to bool, got %s", ast.OutputType())
 	}
 
+	prg, err := e.env.Program(ast)
+	if err != nil {
+		return nil, fmt.Errorf("build CEL program: %w", err)
+	}
+
 	p := Policy{
 		ID:         uuid.New().String(),
 		Name:       name,
@@ -93,7 +141,15 @@ func (e *Engine) AddPolicy(name, expression, action string, priority int) (*Poli
 		CreatedAt:  time.Now().UTC(),
 	}
 
+	// Persist to store if configured.
+	if e.store != nil {
+		if err := e.store.Insert(&p); err != nil {
+			return nil, fmt.Errorf("persist policy: %w", err)
+		}
+	}
+
 	e.mu.Lock()
+	e.compiled[p.ID] = prg
 	e.policies = append(e.policies, p)
 	// Sort by priority descending (higher priority first).
 	sort.Slice(e.policies, func(i, j int) bool {
@@ -110,6 +166,13 @@ func (e *Engine) RemovePolicy(id string) error {
 	defer e.mu.Unlock()
 	for i, p := range e.policies {
 		if p.ID == id {
+			// Delete from store if configured.
+			if e.store != nil {
+				if err := e.store.Delete(id); err != nil {
+					return fmt.Errorf("delete policy from store: %w", err)
+				}
+			}
+			delete(e.compiled, id)
 			e.policies = append(e.policies[:i], e.policies[i+1:]...)
 			return nil
 		}
@@ -146,8 +209,16 @@ func (e *Engine) Evaluate(_ context.Context, input PolicyInput) (bool, string, e
 	copy(policies, e.policies)
 	e.mu.RUnlock()
 
+	e.mu.RLock()
+	storeFailed := e.storeFailed
+	e.mu.RUnlock()
+
+	if storeFailed {
+		return false, "policy-store-load-failed", nil
+	}
+
 	if len(policies) == 0 {
-		// Default allow when no policies are configured.
+		// Default allow when no policies are configured (no store, or store is empty).
 		return true, "", nil
 	}
 
@@ -201,14 +272,26 @@ func (e *Engine) Evaluate(_ context.Context, input PolicyInput) (bool, string, e
 }
 
 func (e *Engine) evalPolicy(p Policy, activation map[string]interface{}) (bool, error) {
-	ast, issues := e.env.Compile(p.Expression)
-	if issues != nil && issues.Err() != nil {
-		return false, issues.Err()
+	e.mu.RLock()
+	prg, cached := e.compiled[p.ID]
+	e.mu.RUnlock()
+
+	if !cached {
+		// Defensive fallback: compile on-the-fly and cache.
+		ast, issues := e.env.Compile(p.Expression)
+		if issues != nil && issues.Err() != nil {
+			return false, issues.Err()
+		}
+		var err error
+		prg, err = e.env.Program(ast)
+		if err != nil {
+			return false, fmt.Errorf("create program: %w", err)
+		}
+		e.mu.Lock()
+		e.compiled[p.ID] = prg
+		e.mu.Unlock()
 	}
-	prg, err := e.env.Program(ast)
-	if err != nil {
-		return false, fmt.Errorf("create program: %w", err)
-	}
+
 	out, _, err := prg.Eval(activation)
 	if err != nil {
 		return false, fmt.Errorf("eval: %w", err)
