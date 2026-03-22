@@ -191,7 +191,7 @@ func TestMemoryStore_GetChildAgents(t *testing.T) {
 func TestMemoryStore_ListAgents_DefaultLimit(t *testing.T) {
 	s := store.NewMemoryStore()
 	for i := 0; i < 5; i++ {
-		s.CreateAgent(newAgent("agent://"+string(rune('a'+i)), "agent", "active", ""))
+		_ = s.CreateAgent(newAgent("agent://"+string(rune('a'+i)), "agent", "active", ""))
 	}
 	// Limit 0 should be treated as default (50).
 	agents, err := s.ListAgents(identity.AgentFilter{Limit: 0})

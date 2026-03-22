@@ -105,7 +105,7 @@ func TestKeyResolver_InvalidateCacheForcesFreshLookup(t *testing.T) {
 	kp, _ := agcrypto.GenerateKeyPair()
 	pubKey := agcrypto.EncodePublicKeyBase64(kp.PublicKey)
 	agent := newAgent("agent://invalidate", kp.KeyID, pubKey)
-	s.CreateAgent(agent)
+	_ = s.CreateAgent(agent)
 
 	// Populate cache.
 	_, _ = r.ResolveKey(kp.KeyID)
@@ -139,7 +139,7 @@ func TestKeyResolver_KeyRotationUpdatesCache(t *testing.T) {
 	kp1, _ := agcrypto.GenerateKeyPair()
 	pub1 := agcrypto.EncodePublicKeyBase64(kp1.PublicKey)
 	agent := newAgent("agent://rotate", kp1.KeyID, pub1)
-	s.CreateAgent(agent)
+	_ = s.CreateAgent(agent)
 
 	// Resolve first key — populates cache.
 	got, err := r.ResolveKey(kp1.KeyID)
