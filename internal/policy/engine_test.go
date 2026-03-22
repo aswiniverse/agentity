@@ -64,8 +64,8 @@ func TestAddPolicy_NonBoolExpression(t *testing.T) {
 
 func TestListPolicies(t *testing.T) {
 	e := newEngine(t)
-	e.AddPolicy("p1", `true`, "allow", 5)
-	e.AddPolicy("p2", `false`, "deny", 10)
+	_, _ = e.AddPolicy("p1", `true`, "allow", 5)
+	_, _ = e.AddPolicy("p2", `false`, "deny", 10)
 
 	policies := e.ListPolicies()
 	if len(policies) != 2 {
@@ -112,7 +112,7 @@ func TestEvaluate_NoPolicies_DefaultAllow(t *testing.T) {
 
 func TestEvaluate_AllowPolicy_Matches(t *testing.T) {
 	e := newEngine(t)
-	e.AddPolicy("allow-read", `"read" in capabilities`, "allow", 0)
+	_, _ = e.AddPolicy("allow-read", `"read" in capabilities`, "allow", 0)
 
 	allowed, _, err := e.Evaluate(context.Background(), policy.PolicyInput{
 		Capabilities: []string{"read"},
@@ -127,7 +127,7 @@ func TestEvaluate_AllowPolicy_Matches(t *testing.T) {
 
 func TestEvaluate_AllowPolicy_NoMatch(t *testing.T) {
 	e := newEngine(t)
-	e.AddPolicy("allow-read", `"read" in capabilities`, "allow", 0)
+	_, _ = e.AddPolicy("allow-read", `"read" in capabilities`, "allow", 0)
 
 	// Agent only has "write" — allow policy doesn't match → deny.
 	allowed, _, err := e.Evaluate(context.Background(), policy.PolicyInput{
@@ -143,8 +143,8 @@ func TestEvaluate_AllowPolicy_NoMatch(t *testing.T) {
 
 func TestEvaluate_DenyPolicy_TakesPrecedence(t *testing.T) {
 	e := newEngine(t)
-	e.AddPolicy("allow-all", `true`, "allow", 0)
-	e.AddPolicy("deny-deep-chain", `chain_depth > 2`, "deny", 100)
+	_, _ = e.AddPolicy("allow-all", `true`, "allow", 0)
+	_, _ = e.AddPolicy("deny-deep-chain", `chain_depth > 2`, "deny", 100)
 
 	// Chain depth = 3 → deny policy matches → should be denied.
 	allowed, name, err := e.Evaluate(context.Background(), policy.PolicyInput{
@@ -164,8 +164,8 @@ func TestEvaluate_DenyPolicy_TakesPrecedence(t *testing.T) {
 
 func TestEvaluate_DenyDoesNotFire_AllowWins(t *testing.T) {
 	e := newEngine(t)
-	e.AddPolicy("allow-all", `true`, "allow", 0)
-	e.AddPolicy("deny-deep", `chain_depth > 5`, "deny", 100)
+	_, _ = e.AddPolicy("allow-all", `true`, "allow", 0)
+	_, _ = e.AddPolicy("deny-deep", `chain_depth > 5`, "deny", 100)
 
 	// Chain depth = 1 → deny policy doesn't match → allow wins.
 	allowed, _, err := e.Evaluate(context.Background(), policy.PolicyInput{
@@ -182,7 +182,7 @@ func TestEvaluate_DenyDoesNotFire_AllowWins(t *testing.T) {
 
 func TestEvaluate_AgentModelFilter(t *testing.T) {
 	e := newEngine(t)
-	e.AddPolicy("allow-gpt4", `agent_model == "gpt-4"`, "allow", 0)
+	_, _ = e.AddPolicy("allow-gpt4", `agent_model == "gpt-4"`, "allow", 0)
 
 	allowed, _, _ := e.Evaluate(context.Background(), policy.PolicyInput{
 		AgentModel:   "gpt-4",

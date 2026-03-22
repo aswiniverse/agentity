@@ -49,7 +49,7 @@ func TestMemoryStore_GetUnknownAgent(t *testing.T) {
 func TestMemoryStore_Update(t *testing.T) {
 	s := store.NewMemoryStore()
 	agent := newAgent("agent://2", "before", "active", "")
-	s.CreateAgent(agent)
+	_ = s.CreateAgent(agent)
 
 	agent.Name = "after"
 	agent.Status = identity.AgentStatusSuspended
@@ -77,7 +77,7 @@ func TestMemoryStore_UpdateUnknown(t *testing.T) {
 func TestMemoryStore_Delete(t *testing.T) {
 	s := store.NewMemoryStore()
 	agent := newAgent("agent://del", "to-delete", "active", "")
-	s.CreateAgent(agent)
+	_ = s.CreateAgent(agent)
 
 	if err := s.DeleteAgent("agent://del"); err != nil {
 		t.Fatalf("DeleteAgent: %v", err)
@@ -98,9 +98,9 @@ func TestMemoryStore_DeleteUnknown(t *testing.T) {
 
 func TestMemoryStore_ListAgents(t *testing.T) {
 	s := store.NewMemoryStore()
-	s.CreateAgent(newAgent("agent://a1", "alpha", "active", ""))
-	s.CreateAgent(newAgent("agent://a2", "beta", "active", ""))
-	s.CreateAgent(newAgent("agent://a3", "gamma", "suspended", ""))
+	_ = s.CreateAgent(newAgent("agent://a1", "alpha", "active", ""))
+	_ = s.CreateAgent(newAgent("agent://a2", "beta", "active", ""))
+	_ = s.CreateAgent(newAgent("agent://a3", "gamma", "suspended", ""))
 
 	all, err := s.ListAgents(identity.AgentFilter{Limit: 10})
 	if err != nil {
@@ -122,7 +122,7 @@ func TestMemoryStore_ListAgents(t *testing.T) {
 func TestMemoryStore_GetAgentByKeyID(t *testing.T) {
 	s := store.NewMemoryStore()
 	agent := newAgent("agent://kl", "key-lookup", "active", "")
-	s.CreateAgent(agent)
+	_ = s.CreateAgent(agent)
 
 	got, err := s.GetAgentByKeyID("kid-agent://kl")
 	if err != nil {
@@ -144,12 +144,12 @@ func TestMemoryStore_GetAgentByKeyID_Unknown(t *testing.T) {
 func TestMemoryStore_GetAgentByKeyID_UpdatedAfterRotation(t *testing.T) {
 	s := store.NewMemoryStore()
 	agent := newAgent("agent://rot", "rotate-me", "active", "")
-	s.CreateAgent(agent)
+	_ = s.CreateAgent(agent)
 
 	// Simulate key rotation.
 	agent.KeyID = "kid-new"
 	agent.PublicKey = "pubkey-new"
-	s.UpdateAgent(agent)
+	_ = s.UpdateAgent(agent)
 
 	// Old key ID should no longer resolve.
 	_, err := s.GetAgentByKeyID("kid-agent://rot")
@@ -174,10 +174,10 @@ func TestMemoryStore_GetChildAgents(t *testing.T) {
 	child2 := newAgent("agent://c2", "child-2", "active", "agent://parent")
 	other := newAgent("agent://other", "other", "active", "")
 
-	s.CreateAgent(parent)
-	s.CreateAgent(child1)
-	s.CreateAgent(child2)
-	s.CreateAgent(other)
+	_ = s.CreateAgent(parent)
+	_ = s.CreateAgent(child1)
+	_ = s.CreateAgent(child2)
+	_ = s.CreateAgent(other)
 
 	children, err := s.GetChildAgents("agent://parent")
 	if err != nil {
@@ -191,7 +191,7 @@ func TestMemoryStore_GetChildAgents(t *testing.T) {
 func TestMemoryStore_ListAgents_DefaultLimit(t *testing.T) {
 	s := store.NewMemoryStore()
 	for i := 0; i < 5; i++ {
-		s.CreateAgent(newAgent("agent://"+string(rune('a'+i)), "agent", "active", ""))
+		_ = s.CreateAgent(newAgent("agent://"+string(rune('a'+i)), "agent", "active", ""))
 	}
 	// Limit 0 should be treated as default (50).
 	agents, err := s.ListAgents(identity.AgentFilter{Limit: 0})

@@ -88,9 +88,9 @@ func TestGetAgent_Unknown(t *testing.T) {
 
 func TestListAgents(t *testing.T) {
 	svc := newService()
-	svc.RegisterAgent(identity.RegisterAgentRequest{Name: "a1"})
-	svc.RegisterAgent(identity.RegisterAgentRequest{Name: "a2"})
-	svc.RegisterAgent(identity.RegisterAgentRequest{Name: "a3"})
+	_, _, _ = svc.RegisterAgent(identity.RegisterAgentRequest{Name: "a1"})
+	_, _, _ = svc.RegisterAgent(identity.RegisterAgentRequest{Name: "a2"})
+	_, _, _ = svc.RegisterAgent(identity.RegisterAgentRequest{Name: "a3"})
 
 	agents, err := svc.ListAgents(identity.AgentFilter{Limit: 10})
 	if err != nil {
@@ -118,7 +118,7 @@ func TestSuspendAgent(t *testing.T) {
 func TestSuspendAgent_AlreadyRevoked(t *testing.T) {
 	svc := newService()
 	agent, _, _ := svc.RegisterAgent(identity.RegisterAgentRequest{Name: "revoked-before-suspend"})
-	svc.RevokeAgent(agent.ID, false)
+	_ = svc.RevokeAgent(agent.ID, false)
 
 	err := svc.SuspendAgent(agent.ID)
 	if err == nil {
@@ -181,7 +181,7 @@ func TestRotateKey(t *testing.T) {
 func TestRotateKey_NotActiveAgent(t *testing.T) {
 	svc := newService()
 	agent, _, _ := svc.RegisterAgent(identity.RegisterAgentRequest{Name: "suspended-rotate"})
-	svc.SuspendAgent(agent.ID)
+	_ = svc.SuspendAgent(agent.ID)
 
 	_, _, err := svc.RotateKey(agent.ID)
 	if err == nil {
@@ -192,8 +192,8 @@ func TestRotateKey_NotActiveAgent(t *testing.T) {
 func TestGetDelegationTree(t *testing.T) {
 	svc := newService()
 	parent, _, _ := svc.RegisterAgent(identity.RegisterAgentRequest{Name: "tree-root"})
-	svc.RegisterAgent(identity.RegisterAgentRequest{Name: "child-1", ParentID: parent.ID})
-	svc.RegisterAgent(identity.RegisterAgentRequest{Name: "child-2", ParentID: parent.ID})
+	_, _, _ = svc.RegisterAgent(identity.RegisterAgentRequest{Name: "child-1", ParentID: parent.ID})
+	_, _, _ = svc.RegisterAgent(identity.RegisterAgentRequest{Name: "child-2", ParentID: parent.ID})
 
 	tree, err := svc.GetDelegationTree(parent.ID)
 	if err != nil {

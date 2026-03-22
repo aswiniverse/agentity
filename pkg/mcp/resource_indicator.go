@@ -7,12 +7,6 @@ import (
 	"strings"
 )
 
-// jwtAudClaims holds only the aud field for partial JWT payload parsing.
-type jwtAudClaims struct {
-	// Aud can be a string or []string per JWT spec; we handle both via custom unmarshal.
-	Aud interface{} `json:"aud"`
-}
-
 // ValidateResourceIndicator checks that the JWT's `aud` claim matches expectedResource.
 // Returns nil if valid, error if not.
 // Parses the JWT without signature verification (token is already verified by the delegation engine).
