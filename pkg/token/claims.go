@@ -28,7 +28,9 @@ type Block struct {
 	IssuedAt     int64           `json:"iat"`
 	Signature    string          `json:"sig"`
 	SignerKeyID  string          `json:"kid"`
-	UserID       string          `json:"uid,omitempty"`
+	UserID           string          `json:"uid,omitempty"`
+	SystemPromptHash string          `json:"sph,omitempty"`
+	ToolFingerprint  string          `json:"tfp,omitempty"`
 }
 
 // VerifiedACT represents a successfully verified ACT token with resolved fields.

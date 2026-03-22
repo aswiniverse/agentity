@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/agentity/agentity/internal/api"
+	"github.com/agentity/agentity/internal/approval"
 	"github.com/agentity/agentity/internal/audit"
 	"github.com/agentity/agentity/internal/config"
 	"github.com/agentity/agentity/internal/delegation"
@@ -15,6 +16,7 @@ import (
 	"github.com/agentity/agentity/internal/server"
 	"github.com/agentity/agentity/internal/store"
 	"github.com/agentity/agentity/internal/user"
+	"github.com/agentity/agentity/internal/vault"
 	agcrypto "github.com/agentity/agentity/pkg/crypto"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
@@ -181,6 +183,26 @@ func runServer(configFile string, devMode bool, port int, logLevel string) error
 	}
 	userService := user.NewUserService(userStore)
 
+	// Initialize vault service if AGENTITY_VAULT_KEY is set.
+	var vaultService *vault.VaultService
+	if vaultEncryptor, vaultErr := vault.NewLocalEncryptorFromEnv(); vaultErr == nil {
+		var vaultStore vault.VaultStore
+		if pgStore != nil {
+			vaultStore = vault.NewPostgresVaultStore(pgStore.Pool())
+		} else {
+			vaultStore = vault.NewMemoryVaultStore()
+		}
+		vaultService = vault.NewVaultService(vaultStore, vaultEncryptor)
+		logger.Info().Msg("vault service initialized")
+	} else {
+		logger.Warn().Msg("AGENTITY_VAULT_KEY not set; credential vault endpoints disabled")
+	}
+
+	// Initialize approval service (always uses memory store; Postgres can be wired later).
+	approvalStore := approval.NewMemoryApprovalStore()
+	serverBase := fmt.Sprintf("http://localhost:%d", cfg.Server.Port)
+	approvalService := approval.NewApprovalService(approvalStore, serverBase)
+
 	// Build router.
 	router := api.NewRouter(api.RouterConfig{
 		Logger:           logger,
@@ -192,6 +214,8 @@ func runServer(configFile string, devMode bool, port int, logLevel string) error
 		AuditLogger:      auditLog,
 		KeyResolver:      keyResolver,
 		UserService:      userService,
+		VaultService:     vaultService,
+		ApprovalService:  approvalService,
 		AdminAPIKey:      cfg.Auth.AdminAPIKey,
 		IssuerURL:        cfg.OIDC.IssuerURL,
 		AllowedOrigins:   []string{"*"}, // restrict in production via config

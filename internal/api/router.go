@@ -5,12 +5,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/agentity/agentity/internal/approval"
 	"github.com/agentity/agentity/internal/audit"
 	"github.com/agentity/agentity/internal/delegation"
 	"github.com/agentity/agentity/internal/identity"
 	"github.com/agentity/agentity/internal/policy"
 	"github.com/agentity/agentity/internal/revocation"
 	"github.com/agentity/agentity/internal/user"
+	"github.com/agentity/agentity/internal/vault"
 	agcrypto "github.com/agentity/agentity/pkg/crypto"
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -29,6 +31,8 @@ type RouterConfig struct {
 	AuditLogger      *audit.Logger
 	KeyResolver      *delegation.KeyResolverImpl
 	UserService      *user.UserService
+	VaultService     *vault.VaultService
+	ApprovalService  *approval.ApprovalService
 	AdminAPIKey      string
 	IssuerURL        string
 	// AllowedOrigins controls CORS. Use ["*"] for dev, explicit origins for prod.
@@ -129,6 +133,15 @@ func NewRouter(cfg RouterConfig) *chi.Mux {
 		r.Post("/tokens/revoke", tokenHandlers.RevokeToken)
 		r.Get("/tokens/{id}/chain", tokenHandlers.GetChain)
 
+		// Vault (credential) endpoints.
+		if cfg.VaultService != nil {
+			vaultHandlers := NewVaultHandlers(cfg.VaultService)
+			r.Post("/agents/{id}/credentials", vaultHandlers.PutCredential)
+			r.Get("/agents/{id}/credentials", vaultHandlers.ListCredentials)
+			r.Get("/agents/{id}/credentials/{key}", vaultHandlers.GetCredential)
+			r.Delete("/agents/{id}/credentials/{key}", vaultHandlers.DeleteCredential)
+		}
+
 		// User binding endpoints.
 		if cfg.UserService != nil {
 			userHandlers := NewUserHandlers(cfg.UserService)
@@ -145,6 +158,15 @@ func NewRouter(cfg RouterConfig) *chi.Mux {
 		r.Post("/admin/policies", adminHandlers.CreatePolicy)
 		r.Delete("/admin/policies/{id}", adminHandlers.DeletePolicy)
 		r.Get("/admin/revocations", adminHandlers.ListRevocations)
+
+		// Approval endpoints.
+		if cfg.ApprovalService != nil {
+			approvalHandlers := NewApprovalHandlers(cfg.ApprovalService)
+			r.Post("/approvals", approvalHandlers.CreateApproval)
+			r.Post("/approvals/{id}/approve", approvalHandlers.ApproveApproval)
+			r.Post("/approvals/{id}/deny", approvalHandlers.DenyApproval)
+			r.Get("/approvals", approvalHandlers.ListApprovals)
+		}
 
 		// Audit endpoints.
 		auditHandlers := NewAuditHandlers(cfg.AuditLogger)

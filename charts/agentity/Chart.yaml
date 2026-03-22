@@ -1,0 +1,17 @@
+apiVersion: v2
+name: agentity
+description: Agent IAM — cryptographic capability tokens for AI agent authorization
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - ai
+  - agents
+  - iam
+  - security
+  - authorization
+home: https://github.com/aswiniverse/agentity
+sources:
+  - https://github.com/aswiniverse/agentity
+maintainers:
+  - name: Agentity

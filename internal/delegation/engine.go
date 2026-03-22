@@ -11,6 +11,31 @@ import (
 	"github.com/agentity/agentity/pkg/token"
 )
 
+// checkFingerprint verifies that the agent's current fingerprint matches what
+// was embedded in the root block at issuance time. Backward compatible: tokens
+// without fingerprint fields pass through unchanged.
+func (e *Engine) checkFingerprint(ctx context.Context, act *token.ACT) error {
+	if len(act.Blocks) == 0 {
+		return nil
+	}
+	rootBlock := act.Blocks[0]
+	if rootBlock.SystemPromptHash == "" && rootBlock.ToolFingerprint == "" {
+		return nil // no fingerprint embedded — backward compatible, skip check
+	}
+	agentID := rootBlock.Subject // root block subject is the issuing agent
+	agent, err := e.identityStore.GetAgent(agentID)
+	if err != nil {
+		return fmt.Errorf("fingerprint check: get agent: %w", err)
+	}
+	if rootBlock.SystemPromptHash != "" && rootBlock.SystemPromptHash != agent.Fingerprint.SystemPromptHash {
+		return fmt.Errorf("agent fingerprint mismatch: system prompt changed")
+	}
+	if rootBlock.ToolFingerprint != "" && rootBlock.ToolFingerprint != agent.Fingerprint.ToolFingerprint {
+		return fmt.Errorf("agent fingerprint mismatch: tools changed")
+	}
+	return nil
+}
+
 // DelegationRequest contains parameters for creating a delegation.
 type DelegationRequest struct {
 	ParentTokenEncoded string
@@ -118,6 +143,27 @@ func (e *Engine) Verify(ctx context.Context, encoded string) (*token.VerifiedACT
 				audit.EventAccessDenied,
 				"unknown",
 				"unknown",
+				"verify",
+				"denied",
+				map[string]interface{}{
+					"error": err.Error(),
+				},
+			)
+		}
+		return nil, err
+	}
+
+	// Fingerprint enforcement: check if agent's system prompt or tools changed.
+	act, err := token.Decode(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("decode token for fingerprint check: %w", err)
+	}
+	if err := e.checkFingerprint(ctx, act); err != nil {
+		if e.audit != nil {
+			_, _ = e.audit.Log(
+				audit.EventAccessDenied,
+				verified.AgentID,
+				verified.AgentID,
 				"verify",
 				"denied",
 				map[string]interface{}{

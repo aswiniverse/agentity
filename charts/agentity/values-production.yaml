@@ -1,0 +1,129 @@
+# Production values for Agentity Helm chart
+# Usage: helm install agentity ./charts/agentity -f values-production.yaml
+
+replicaCount: 3
+
+image:
+  repository: ghcr.io/aswiniverse/agentity
+  pullPolicy: Always
+  tag: "v1.0.0"
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: agentity.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: agentity-tls
+      hosts:
+        - agentity.example.com
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+  requests:
+    cpu: 500m
+    memory: 256Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 75
+
+nodeSelector:
+  workload: agentity
+
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - agentity
+          topologyKey: kubernetes.io/hostname
+
+config:
+  logLevel: info
+  logFormat: json
+  store:
+    type: postgres
+  port: 8080
+  readTimeout: 30s
+  writeTimeout: 30s
+  shutdownTimeout: 15s
+
+# Generated secret - do NOT commit to version control
+# Use sealed-secrets or external-secrets in production
+adminApiKey: ""  # Set via helm --set or -f secrets.yaml
+
+# Crypto root key (32-byte hex string)
+# Generate with: openssl rand -hex 32
+cryptoRootKey: ""  # Set via helm --set or -f secrets.yaml
+
+oidc:
+  issuerUrl: "https://auth.example.com"
+
+redis:
+  enabled: true
+  address: redis-cluster.agentity.svc.cluster.local:6379
+  password: ""  # Set via helm --set or -f secrets.yaml
+  db: 0
+
+otel:
+  enabled: true
+  serviceName: agentity
+  exporterType: otlp
+  endpoint: "http://otel-collector.monitoring.svc.cluster.local:4317"
+
+postgresql:
+  enabled: true
+  host: postgres.agentity.svc.cluster.local
+  port: 5432
+  database: agentity
+  user: agentity
+  maxConns: 50
+  password: ""  # Set via helm --set or -f secrets.yaml
