@@ -33,3 +33,8 @@ Thumbs.db
 
 # oh-my-claudecode plugin state
 .omc/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
