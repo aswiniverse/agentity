@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentity.fullname" . }}
+  labels:
+    {{- include "agentity.labels" . | nindent 4 }}
+data:
+  AGENTITY_SERVER_PORT: {{ .Values.config.port | quote }}
+  AGENTITY_LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  AGENTITY_LOG_FORMAT: {{ .Values.config.logFormat | quote }}
+  AGENTITY_STORE_TYPE: {{ .Values.config.store.type | quote }}
+  AGENTITY_SERVER_READ_TIMEOUT: {{ .Values.config.readTimeout | quote }}
+  AGENTITY_SERVER_WRITE_TIMEOUT: {{ .Values.config.writeTimeout | quote }}
+  AGENTITY_SERVER_SHUTDOWN_TIMEOUT: {{ .Values.config.shutdownTimeout | quote }}
+  {{- if .Values.oidc.issuerUrl }}
+  AGENTITY_OIDC_ISSUER_URL: {{ .Values.oidc.issuerUrl | quote }}
+  {{- end }}
+  {{- if .Values.redis.enabled }}
+  AGENTITY_REDIS_ENABLED: "true"
+  AGENTITY_REDIS_ADDRESS: {{ .Values.redis.address | quote }}
+  AGENTITY_REDIS_DB: {{ .Values.redis.db | quote }}
+  {{- else }}
+  AGENTITY_REDIS_ENABLED: "false"
+  {{- end }}
+  {{- if eq .Values.config.store.type "postgres" }}
+  AGENTITY_STORE_TYPE: "postgres"
+  AGENTITY_STORE_MAX_CONNS: {{ .Values.postgresql.maxConns | quote }}
+  {{- end }}
+  {{- if .Values.otel.enabled }}
+  AGENTITY_OTEL_ENABLED: "true"
+  AGENTITY_OTEL_SERVICE_NAME: {{ .Values.otel.serviceName | quote }}
+  AGENTITY_OTEL_EXPORTER_TYPE: {{ .Values.otel.exporterType | quote }}
+  {{- if .Values.otel.endpoint }}
+  AGENTITY_OTEL_ENDPOINT: {{ .Values.otel.endpoint | quote }}
+  {{- end }}
+  {{- else }}
+  AGENTITY_OTEL_ENABLED: "false"
+  {{- end }}

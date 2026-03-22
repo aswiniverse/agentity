@@ -143,16 +143,15 @@ func (h *TokenHandlers) IssueToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	issueStart := time.Now()
-	act, err := token.IssueRootToken(req.AgentID, req.Capabilities, req.Conditions, h.rootKeyStore.PrivateKey())
+	act, err := token.IssueRootTokenWithOptions(req.AgentID, req.Capabilities, req.Conditions, h.rootKeyStore.PrivateKey(), token.RootTokenOptions{
+		UserID:           userID,
+		SystemPromptHash: agent.Fingerprint.SystemPromptHash,
+		ToolFingerprint:  agent.Fingerprint.ToolFingerprint,
+	})
 	metrics.IssuanceDuration.Observe(time.Since(issueStart).Seconds())
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, "https://agentity.dev/errors/token-issue-failed", "Token Issue Failed", err.Error())
 		return
-	}
-
-	// Set UserID in the root block if user token was verified.
-	if userID != "" && len(act.Blocks) > 0 {
-		act.Blocks[0].UserID = userID
 	}
 
 	metrics.TokensIssued.Inc()

@@ -1,0 +1,101 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/aswiniverse/agentity
+  pullPolicy: IfNotPresent
+  tag: ""  # defaults to Chart.appVersion
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podSecurityContext: {}
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  readOnlyRootFilesystem: true
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: agentity.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Agentity configuration
+config:
+  logLevel: info
+  logFormat: json
+  store:
+    type: memory  # or "postgres"
+  port: 8080
+  readTimeout: 30s
+  writeTimeout: 30s
+  shutdownTimeout: 15s
+
+# Admin API key (stored in Secret)
+adminApiKey: ""
+
+# Crypto root key file path (32-byte hex, stored in Secret)
+cryptoRootKey: ""
+
+# OIDC configuration
+oidc:
+  issuerUrl: ""
+
+# Redis configuration
+redis:
+  enabled: false
+  address: ""
+  password: ""
+  db: 0
+
+# OpenTelemetry configuration
+otel:
+  enabled: false
+  serviceName: agentity
+  exporterType: stdout  # or "otlp"
+  endpoint: ""
+
+# PostgreSQL configuration (if store.type=postgres)
+postgresql:
+  enabled: false
+  host: ""
+  port: 5432
+  database: agentity
+  user: agentity
+  maxConns: 20
+  # existingSecret: "" # name of existing secret with POSTGRES_PASSWORD key
+  password: ""

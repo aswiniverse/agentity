@@ -1,0 +1,23 @@
+Agentity has been deployed!
+
+1. Get the application URL:
+{{- if .Values.ingress.enabled }}
+  http{{ if .Values.ingress.tls }}s{{ end }}://{{ (index .Values.ingress.hosts 0).host }}
+{{- else if contains "NodePort" .Values.service.type }}
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "agentity.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT
+{{- else if contains "LoadBalancer" .Values.service.type }}
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "agentity.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
+  echo http://$SERVICE_IP:{{ .Values.service.port }}
+{{- else }}
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "{{ include "agentity.selectorLabels" . }}" -o jsonpath="{.items[0].metadata.name}")
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 8080:8080
+  echo "Visit http://127.0.0.1:8080 to access Agentity"
+{{- end }}
+
+2. Get the admin API key:
+   kubectl --namespace {{ .Release.Namespace }} get secret {{ include "agentity.fullname" . }} -o jsonpath="{.data.AGENTITY_AUTH_ADMIN_API_KEY}" | base64 --decode
+
+3. Check the deployment status:
+   kubectl --namespace {{ .Release.Namespace }} rollout status deployment/{{ include "agentity.fullname" . }}

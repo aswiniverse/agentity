@@ -1,0 +1,92 @@
+# Development values for Agentity Helm chart
+# Usage: helm install agentity ./charts/agentity -f values-development.yaml
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/aswiniverse/agentity
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podSecurityContext: {}
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  readOnlyRootFilesystem: true
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: agentity.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+config:
+  logLevel: debug
+  logFormat: console
+  store:
+    type: memory
+  port: 8080
+  readTimeout: 30s
+  writeTimeout: 30s
+  shutdownTimeout: 15s
+
+adminApiKey: "dev-admin-key-change-me"
+cryptoRootKey: "0123456789abcdef0123456789abcdef"
+
+oidc:
+  issuerUrl: ""
+
+redis:
+  enabled: false
+  address: localhost:6379
+  password: ""
+  db: 0
+
+otel:
+  enabled: false
+  serviceName: agentity-dev
+  exporterType: stdout
+  endpoint: ""
+
+postgresql:
+  enabled: false
+  host: localhost
+  port: 5432
+  database: agentity
+  user: agentity
+  maxConns: 20
+  password: ""

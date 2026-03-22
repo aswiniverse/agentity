@@ -59,6 +59,64 @@ func IssueRootToken(agentID string, capabilities []string, conditions BlockCondi
 	return act, nil
 }
 
+// RootTokenOptions carries optional fields for IssueRootTokenWithOptions.
+type RootTokenOptions struct {
+	UserID           string
+	SystemPromptHash string
+	ToolFingerprint  string
+}
+
+// IssueRootTokenWithOptions creates a new ACT with a single root block, embedding
+// the optional fields (UserID, SystemPromptHash, ToolFingerprint) before signing
+// so the signature covers those fields.
+func IssueRootTokenWithOptions(agentID string, capabilities []string, conditions BlockConditions, rootKey ed25519.PrivateKey, opts RootTokenOptions) (*ACT, error) {
+	if len(capabilities) == 0 {
+		return nil, fmt.Errorf("capabilities must not be empty")
+	}
+	if conditions.ExpiresAt == 0 {
+		return nil, fmt.Errorf("expiry (exp) must be set")
+	}
+	if conditions.ExpiresAt <= time.Now().Unix() {
+		return nil, fmt.Errorf("expiry must be in the future")
+	}
+
+	nonce, err := generateNonce()
+	if err != nil {
+		return nil, fmt.Errorf("generate nonce: %w", err)
+	}
+
+	pub := rootKey.Public().(ed25519.PublicKey)
+	kid := agcrypto.ComputeKeyID(pub)
+	serverID := "agentity://server"
+
+	block := Block{
+		Index:            0,
+		Issuer:           serverID,
+		Subject:          agentID,
+		Capabilities:     sortedCopy(capabilities),
+		Conditions:       conditions,
+		Nonce:            nonce,
+		IssuedAt:         time.Now().Unix(),
+		SignerKeyID:      kid,
+		UserID:           opts.UserID,
+		SystemPromptHash: opts.SystemPromptHash,
+		ToolFingerprint:  opts.ToolFingerprint,
+	}
+
+	sig, err := signBlock(&block, rootKey)
+	if err != nil {
+		return nil, fmt.Errorf("sign root block: %w", err)
+	}
+	block.Signature = sig
+
+	act := &ACT{
+		Version: 1,
+		TokenID: uuid.New().String(),
+		Blocks:  []Block{block},
+	}
+	return act, nil
+}
+
 // Delegate creates a new ACT by appending a delegation block to the parent token.
 // It enforces capability subset, expiry monotonicity, and max delegation depth.
 func Delegate(parent *ACT, childAgentID string, capabilities []string, conditions BlockConditions, parentAgentKey ed25519.PrivateKey) (*ACT, error) {
@@ -193,6 +251,12 @@ func canonicalBlockBytes(block *Block) ([]byte, error) {
 	}
 	if block.UserID != "" {
 		m["uid"] = block.UserID
+	}
+	if block.SystemPromptHash != "" {
+		m["sph"] = block.SystemPromptHash
+	}
+	if block.ToolFingerprint != "" {
+		m["tfp"] = block.ToolFingerprint
 	}
 	return canonicalJSON(m)
 }
