@@ -192,8 +192,8 @@ func TestRotateKey_NotActiveAgent(t *testing.T) {
 func TestGetDelegationTree(t *testing.T) {
 	svc := newService()
 	parent, _, _ := svc.RegisterAgent(identity.RegisterAgentRequest{Name: "tree-root"})
-	svc.RegisterAgent(identity.RegisterAgentRequest{Name: "child-1", ParentID: parent.ID})
-	svc.RegisterAgent(identity.RegisterAgentRequest{Name: "child-2", ParentID: parent.ID})
+	_, _, _ = svc.RegisterAgent(identity.RegisterAgentRequest{Name: "child-1", ParentID: parent.ID})
+	_, _, _ = svc.RegisterAgent(identity.RegisterAgentRequest{Name: "child-2", ParentID: parent.ID})
 
 	tree, err := svc.GetDelegationTree(parent.ID)
 	if err != nil {

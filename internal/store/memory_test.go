@@ -122,7 +122,7 @@ func TestMemoryStore_ListAgents(t *testing.T) {
 func TestMemoryStore_GetAgentByKeyID(t *testing.T) {
 	s := store.NewMemoryStore()
 	agent := newAgent("agent://kl", "key-lookup", "active", "")
-	s.CreateAgent(agent)
+	_ = s.CreateAgent(agent)
 
 	got, err := s.GetAgentByKeyID("kid-agent://kl")
 	if err != nil {
@@ -144,7 +144,7 @@ func TestMemoryStore_GetAgentByKeyID_Unknown(t *testing.T) {
 func TestMemoryStore_GetAgentByKeyID_UpdatedAfterRotation(t *testing.T) {
 	s := store.NewMemoryStore()
 	agent := newAgent("agent://rot", "rotate-me", "active", "")
-	s.CreateAgent(agent)
+	_ = s.CreateAgent(agent)
 
 	// Simulate key rotation.
 	agent.KeyID = "kid-new"
@@ -174,10 +174,10 @@ func TestMemoryStore_GetChildAgents(t *testing.T) {
 	child2 := newAgent("agent://c2", "child-2", "active", "agent://parent")
 	other := newAgent("agent://other", "other", "active", "")
 
-	s.CreateAgent(parent)
-	s.CreateAgent(child1)
-	s.CreateAgent(child2)
-	s.CreateAgent(other)
+	_ = s.CreateAgent(parent)
+	_ = s.CreateAgent(child1)
+	_ = s.CreateAgent(child2)
+	_ = s.CreateAgent(other)
 
 	children, err := s.GetChildAgents("agent://parent")
 	if err != nil {

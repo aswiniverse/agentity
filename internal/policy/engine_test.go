@@ -127,7 +127,7 @@ func TestEvaluate_AllowPolicy_Matches(t *testing.T) {
 
 func TestEvaluate_AllowPolicy_NoMatch(t *testing.T) {
 	e := newEngine(t)
-	e.AddPolicy("allow-read", `"read" in capabilities`, "allow", 0)
+	_, _ = e.AddPolicy("allow-read", `"read" in capabilities`, "allow", 0)
 
 	// Agent only has "write" — allow policy doesn't match → deny.
 	allowed, _, err := e.Evaluate(context.Background(), policy.PolicyInput{
@@ -143,8 +143,8 @@ func TestEvaluate_AllowPolicy_NoMatch(t *testing.T) {
 
 func TestEvaluate_DenyPolicy_TakesPrecedence(t *testing.T) {
 	e := newEngine(t)
-	e.AddPolicy("allow-all", `true`, "allow", 0)
-	e.AddPolicy("deny-deep-chain", `chain_depth > 2`, "deny", 100)
+	_, _ = e.AddPolicy("allow-all", `true`, "allow", 0)
+	_, _ = e.AddPolicy("deny-deep-chain", `chain_depth > 2`, "deny", 100)
 
 	// Chain depth = 3 → deny policy matches → should be denied.
 	allowed, name, err := e.Evaluate(context.Background(), policy.PolicyInput{
