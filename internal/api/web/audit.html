@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agentity Admin — Audit Log</title>
+  <link rel="stylesheet" href="/admin/static/style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="sidebar-logo">Agent<span>ity</span></div>
+    <nav>
+      <a href="/admin/"><span class="icon">&#9632;</span> Dashboard</a>
+      <a href="/admin/agents.html"><span class="icon">&#9675;</span> Agents</a>
+      <a href="/admin/tokens.html"><span class="icon">&#128273;</span> Token Inspector</a>
+      <a href="/admin/policies.html"><span class="icon">&#128220;</span> Policies</a>
+      <a href="/admin/audit.html" class="active"><span class="icon">&#128196;</span> Audit Log</a>
+    </nav>
+  </aside>
+
+  <div class="main">
+    <header class="header">
+      <h1>Audit Log</h1>
+      <div class="api-key-group">
+        <label for="api-key-input">Admin API Key</label>
+        <input type="password" id="api-key-input" placeholder="Enter admin API key…">
+        <button class="btn btn-secondary" id="api-key-save">Save</button>
+      </div>
+    </header>
+
+    <div class="content">
+      <div class="table-wrapper">
+        <div class="table-toolbar">
+          <span class="table-toolbar-title">Recent Events (last 50)</span>
+          <div style="display:flex;align-items:center;gap:12px">
+            <div class="toggle-group">
+              <label class="toggle">
+                <input type="checkbox" id="auto-refresh-toggle">
+                <span class="toggle-slider"></span>
+              </label>
+              <span style="font-size:13px;color:var(--text-muted)">Auto-refresh (10s)</span>
+            </div>
+            <button class="btn btn-secondary" id="refresh-btn">&#8635; Refresh</button>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Actor</th>
+              <th>Target</th>
+              <th>Action</th>
+              <th>Outcome</th>
+              <th>Timestamp</th>
+            </tr>
+          </thead>
+          <tbody id="audit-body">
+            <tr class="empty-row"><td colspan="6">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="/admin/static/app.js"></script>
+  <script src="/admin/static/audit.js"></script>
+</body>
+</html>

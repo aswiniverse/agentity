@@ -151,6 +151,9 @@ func NewRouter(cfg RouterConfig) *chi.Mux {
 		r.Get("/audit", auditHandlers.ListAuditEntries)
 	})
 
+	// Admin UI served at /admin/*.
+	registerAdminRoutes(r)
+
 	return r
 }
 
