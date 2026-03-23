@@ -208,16 +208,23 @@ func (s *Service) ListDescendants(parentID string) ([]string, error) {
 	return result, nil
 }
 
+// maxBuildTreeDepth caps delegation tree traversal to prevent stack overflows
+// caused by deep or cyclic agent hierarchies.
+const maxBuildTreeDepth = 100
+
 // GetDelegationTree builds the delegation tree starting from the given root agent ID.
 func (s *Service) GetDelegationTree(rootID string) (*DelegationTree, error) {
 	agent, err := s.store.GetAgent(rootID)
 	if err != nil {
 		return nil, fmt.Errorf("get root agent: %w", err)
 	}
-	return s.buildTree(agent)
+	return s.buildTree(agent, 0)
 }
 
-func (s *Service) buildTree(agent *AgentIdentity) (*DelegationTree, error) {
+func (s *Service) buildTree(agent *AgentIdentity, depth int) (*DelegationTree, error) {
+	if depth >= maxBuildTreeDepth {
+		return nil, fmt.Errorf("delegation tree exceeds maximum depth (%d) at agent %s", maxBuildTreeDepth, agent.ID)
+	}
 	tree := &DelegationTree{
 		Agent: agent,
 	}
@@ -226,7 +233,7 @@ func (s *Service) buildTree(agent *AgentIdentity) (*DelegationTree, error) {
 		return nil, err
 	}
 	for _, child := range children {
-		childTree, err := s.buildTree(child)
+		childTree, err := s.buildTree(child, depth+1)
 		if err != nil {
 			return nil, err
 		}

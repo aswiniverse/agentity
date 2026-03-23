@@ -26,6 +26,10 @@ type Config struct {
 type ServerConfig struct {
 	Host            string        `mapstructure:"host"`
 	Port            int           `mapstructure:"port"`
+	// ServerURL is the externally-reachable base URL of this server, used for
+	// generating absolute callback URLs (e.g. approval webhook approve/deny links).
+	// Example: "https://agentity.example.com". If empty, defaults to http://localhost:{Port}.
+	ServerURL       string        `mapstructure:"server_url"`
 	ReadTimeout     time.Duration `mapstructure:"read_timeout"`
 	WriteTimeout    time.Duration `mapstructure:"write_timeout"`
 	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`

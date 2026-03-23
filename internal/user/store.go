@@ -3,11 +3,13 @@ package user
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -71,7 +73,14 @@ func (s *PostgresUserStore) GetUserByExternalID(ctx context.Context, externalID,
 	row := s.pool.QueryRow(ctx,
 		`SELECT id, external_id, issuer, email, display_name, metadata, created_at, updated_at
 		 FROM users WHERE external_id = $1 AND issuer = $2`, externalID, issuer)
-	return scanUser(row)
+	u, err := scanUser(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("user with external_id %s and issuer %s: %w", externalID, issuer, ErrNotFound)
+		}
+		return nil, err
+	}
+	return u, nil
 }
 
 type rowScanner interface {
@@ -275,7 +284,7 @@ func (s *MemoryUserStore) GetUserByExternalID(_ context.Context, externalID, iss
 			return u, nil
 		}
 	}
-	return nil, fmt.Errorf("user with external_id %s and issuer %s not found", externalID, issuer)
+	return nil, fmt.Errorf("user with external_id %s and issuer %s: %w", externalID, issuer, ErrNotFound)
 }
 
 func (s *MemoryUserStore) CreateBinding(_ context.Context, binding *UserAgentBinding) error {
