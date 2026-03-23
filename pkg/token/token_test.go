@@ -1,6 +1,7 @@
 package token_test
 
 import (
+	"encoding/base64"
 	"fmt"
 	"testing"
 	"time"
@@ -375,3 +376,412 @@ func TestDelegate_FullChainVerification(t *testing.T) {
 		t.Fatalf("expected capabilities=[read], got %v", verified.Capabilities)
 	}
 }
+
+// --- Additional helpers for new tests ---
+
+type agentRevokedChecker struct{ revokedAgentID string }
+
+func (r *agentRevokedChecker) IsTokenRevoked(_ string) (bool, error) { return false, nil }
+func (r *agentRevokedChecker) IsAgentRevoked(id string) (bool, error) {
+	return id == r.revokedAgentID, nil
+}
+
+type errorChecker struct{}
+
+func (e *errorChecker) IsTokenRevoked(_ string) (bool, error) { return false, fmt.Errorf("db error") }
+func (e *errorChecker) IsAgentRevoked(_ string) (bool, error)  { return false, nil }
+
+// --- TestIssueRootTokenWithOptions ---
+
+func TestIssueRootTokenWithOptions(t *testing.T) {
+	ks := newRootKeyStore(t)
+	opts := token.RootTokenOptions{
+		UserID:           "user-abc",
+		SystemPromptHash: "sha256-xyz",
+		ToolFingerprint:  "fp-123",
+	}
+	act, err := token.IssueRootTokenWithOptions("agent://opts-agent", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(3600),
+	}, ks.PrivateKey(), opts)
+	if err != nil {
+		t.Fatalf("IssueRootTokenWithOptions: %v", err)
+	}
+	if len(act.Blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(act.Blocks))
+	}
+	block := act.Blocks[0]
+	if block.UserID != "user-abc" {
+		t.Fatalf("expected UserID=user-abc, got %q", block.UserID)
+	}
+	if block.SystemPromptHash != "sha256-xyz" {
+		t.Fatalf("expected SystemPromptHash=sha256-xyz, got %q", block.SystemPromptHash)
+	}
+	if block.ToolFingerprint != "fp-123" {
+		t.Fatalf("expected ToolFingerprint=fp-123, got %q", block.ToolFingerprint)
+	}
+}
+
+// --- TestVerify_UnsupportedVersion ---
+
+func TestVerify_UnsupportedVersion(t *testing.T) {
+	ks := newRootKeyStore(t)
+	act, _ := token.IssueRootToken("agent://v2", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(3600),
+	}, ks.PrivateKey())
+
+	act.Version = 2
+	encoded, _ := token.Encode(act)
+
+	resolver := &staticKeyResolver{keys: map[string]string{
+		ks.KeyID(): agcrypto.EncodePublicKeyBase64(ks.PublicKey()),
+	}}
+	_, err := token.Verify(encoded, resolver, &noopRevocationChecker{})
+	if err == nil {
+		t.Fatal("expected error for unsupported version")
+	}
+}
+
+// --- TestVerify_NoBlocks ---
+
+func TestVerify_NoBlocks(t *testing.T) {
+	ks := newRootKeyStore(t)
+	act, _ := token.IssueRootToken("agent://noblocks", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(3600),
+	}, ks.PrivateKey())
+
+	act.Blocks = []token.Block{}
+	encoded, _ := token.Encode(act)
+
+	resolver := &staticKeyResolver{keys: map[string]string{
+		ks.KeyID(): agcrypto.EncodePublicKeyBase64(ks.PublicKey()),
+	}}
+	_, err := token.Verify(encoded, resolver, &noopRevocationChecker{})
+	if err == nil {
+		t.Fatal("expected error for empty blocks")
+	}
+}
+
+// --- TestVerify_BlockIndexMismatch ---
+
+func TestVerify_BlockIndexMismatch(t *testing.T) {
+	ks := newRootKeyStore(t)
+	act, _ := token.IssueRootToken("agent://idx", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(3600),
+	}, ks.PrivateKey())
+
+	act.Blocks[0].Index = 99
+	encoded, _ := token.Encode(act)
+
+	resolver := &staticKeyResolver{keys: map[string]string{
+		ks.KeyID(): agcrypto.EncodePublicKeyBase64(ks.PublicKey()),
+	}}
+	_, err := token.Verify(encoded, resolver, &noopRevocationChecker{})
+	if err == nil {
+		t.Fatal("expected error for block index mismatch")
+	}
+}
+
+// --- TestVerify_ChainLinkageBroken ---
+
+func TestVerify_ChainLinkageBroken(t *testing.T) {
+	ks := newRootKeyStore(t)
+	agentKP := newKeyPair(t)
+
+	parentACT, _ := token.IssueRootToken("agent://parent", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(3600),
+	}, ks.PrivateKey())
+
+	childACT, _ := token.Delegate(parentACT, "agent://child", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(1800),
+	}, agentKP.PrivateKey)
+
+	// Break the chain linkage: set block[1].Issuer to something that doesn't match block[0].Subject.
+	childACT.Blocks[1].Issuer = "agent://nobody"
+	encoded, _ := token.Encode(childACT)
+
+	resolver := &staticKeyResolver{keys: map[string]string{
+		ks.KeyID():     agcrypto.EncodePublicKeyBase64(ks.PublicKey()),
+		agentKP.KeyID: agcrypto.EncodePublicKeyBase64(agentKP.PublicKey),
+	}}
+	_, err := token.Verify(encoded, resolver, &noopRevocationChecker{})
+	if err == nil {
+		t.Fatal("expected error for broken chain linkage")
+	}
+}
+
+// --- TestVerify_AgentRevoked ---
+
+func TestVerify_AgentRevoked(t *testing.T) {
+	ks := newRootKeyStore(t)
+	agentID := "agent://revoked-agent"
+	act, _ := token.IssueRootToken(agentID, []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(3600),
+	}, ks.PrivateKey())
+	encoded, _ := token.Encode(act)
+
+	resolver := &staticKeyResolver{keys: map[string]string{
+		ks.KeyID(): agcrypto.EncodePublicKeyBase64(ks.PublicKey()),
+	}}
+	_, err := token.Verify(encoded, resolver, &agentRevokedChecker{revokedAgentID: agentID})
+	if err == nil {
+		t.Fatal("expected error for revoked agent")
+	}
+	if !containsStr(err.Error(), "revoked") {
+		t.Fatalf("expected error containing 'revoked', got: %v", err)
+	}
+}
+
+// --- TestVerify_IssuerRevoked ---
+
+func TestVerify_IssuerRevoked(t *testing.T) {
+	ks := newRootKeyStore(t)
+	agentKP := newKeyPair(t)
+
+	parentACT, _ := token.IssueRootToken("agent://parent", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(3600),
+	}, ks.PrivateKey())
+
+	childACT, _ := token.Delegate(parentACT, "agent://child", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(1800),
+	}, agentKP.PrivateKey)
+	encoded, _ := token.Encode(childACT)
+
+	resolver := &staticKeyResolver{keys: map[string]string{
+		ks.KeyID():     agcrypto.EncodePublicKeyBase64(ks.PublicKey()),
+		agentKP.KeyID: agcrypto.EncodePublicKeyBase64(agentKP.PublicKey),
+	}}
+	// Revoke the issuer of block[1], which is "agent://parent" (block[0].Subject).
+	_, err := token.Verify(encoded, resolver, &agentRevokedChecker{revokedAgentID: "agent://parent"})
+	if err == nil {
+		t.Fatal("expected error for revoked issuer")
+	}
+	if !containsStr(err.Error(), "revoked") {
+		t.Fatalf("expected error containing 'revoked', got: %v", err)
+	}
+}
+
+// --- TestVerify_NotBefore ---
+
+func TestVerify_NotBefore(t *testing.T) {
+	ks := newRootKeyStore(t)
+	act, _ := token.IssueRootToken("agent://nbf", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(3600),
+	}, ks.PrivateKey())
+
+	// Set NotBefore to far in the future.
+	act.Blocks[0].Conditions.NotBefore = futureExp(9999)
+	encoded, _ := token.Encode(act)
+
+	resolver := &staticKeyResolver{keys: map[string]string{
+		ks.KeyID(): agcrypto.EncodePublicKeyBase64(ks.PublicKey()),
+	}}
+	_, err := token.Verify(encoded, resolver, &noopRevocationChecker{})
+	if err == nil {
+		t.Fatal("expected error for not-yet-valid token")
+	}
+	if !containsStr(err.Error(), "not yet valid") {
+		t.Fatalf("expected error containing 'not yet valid', got: %v", err)
+	}
+}
+
+// --- TestVerify_RevocationCheckerError ---
+
+func TestVerify_RevocationCheckerError(t *testing.T) {
+	ks := newRootKeyStore(t)
+	act, _ := token.IssueRootToken("agent://checker-err", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(3600),
+	}, ks.PrivateKey())
+	encoded, _ := token.Encode(act)
+
+	resolver := &staticKeyResolver{keys: map[string]string{
+		ks.KeyID(): agcrypto.EncodePublicKeyBase64(ks.PublicKey()),
+	}}
+	_, err := token.Verify(encoded, resolver, &errorChecker{})
+	if err == nil {
+		t.Fatal("expected error from revocation checker")
+	}
+}
+
+// --- TestVerify_CapabilityAmplificationInChain ---
+
+func TestVerify_CapabilityAmplificationInChain(t *testing.T) {
+	ks := newRootKeyStore(t)
+	agentKP := newKeyPair(t)
+
+	parentACT, _ := token.IssueRootToken("agent://parent", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(3600),
+	}, ks.PrivateKey())
+
+	childACT, _ := token.Delegate(parentACT, "agent://child", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(1800),
+	}, agentKP.PrivateKey)
+
+	// Manually amplify capabilities in block[1] after signing.
+	childACT.Blocks[1].Capabilities = []string{"read", "write"}
+	encoded, _ := token.Encode(childACT)
+
+	resolver := &staticKeyResolver{keys: map[string]string{
+		ks.KeyID():     agcrypto.EncodePublicKeyBase64(ks.PublicKey()),
+		agentKP.KeyID: agcrypto.EncodePublicKeyBase64(agentKP.PublicKey),
+	}}
+	_, err := token.Verify(encoded, resolver, &noopRevocationChecker{})
+	if err == nil {
+		t.Fatal("expected error for capability amplification in chain")
+	}
+}
+
+// --- TestVerify_ExpiryMonotonicityViolation ---
+
+func TestVerify_ExpiryMonotonicityViolation(t *testing.T) {
+	ks := newRootKeyStore(t)
+	agentKP := newKeyPair(t)
+
+	parentACT, _ := token.IssueRootToken("agent://parent", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(1800),
+	}, ks.PrivateKey())
+
+	childACT, _ := token.Delegate(parentACT, "agent://child", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(900),
+	}, agentKP.PrivateKey)
+
+	// Manually set block[1] expiry to exceed block[0] expiry.
+	childACT.Blocks[1].Conditions.ExpiresAt = futureExp(7200)
+	encoded, _ := token.Encode(childACT)
+
+	resolver := &staticKeyResolver{keys: map[string]string{
+		ks.KeyID():     agcrypto.EncodePublicKeyBase64(ks.PublicKey()),
+		agentKP.KeyID: agcrypto.EncodePublicKeyBase64(agentKP.PublicKey),
+	}}
+	_, err := token.Verify(encoded, resolver, &noopRevocationChecker{})
+	if err == nil {
+		t.Fatal("expected error for expiry monotonicity violation in chain")
+	}
+}
+
+// --- TestVerify_ExpiresAtZeroBlocked ---
+
+func TestVerify_ExpiresAtZeroBlocked(t *testing.T) {
+	ks := newRootKeyStore(t)
+	act, _ := token.IssueRootToken("agent://zeroexp", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(3600),
+	}, ks.PrivateKey())
+
+	// Force ExpiresAt to zero as a bypass attempt.
+	act.Blocks[0].Conditions.ExpiresAt = 0
+	encoded, _ := token.Encode(act)
+
+	resolver := &staticKeyResolver{keys: map[string]string{
+		ks.KeyID(): agcrypto.EncodePublicKeyBase64(ks.PublicKey()),
+	}}
+	_, err := token.Verify(encoded, resolver, &noopRevocationChecker{})
+	if err == nil {
+		t.Fatal("expected error for zero ExpiresAt")
+	}
+	if !containsStr(err.Error(), "missing expiry") {
+		t.Fatalf("expected error containing 'missing expiry', got: %v", err)
+	}
+}
+
+// --- TestDecode_ValidBase64InvalidJSON ---
+
+func TestDecode_ValidBase64InvalidJSON(t *testing.T) {
+	// base64url-encode bytes that are not valid JSON.
+	invalidJSON := []byte("{not valid json}")
+	encoded := base64.RawURLEncoding.EncodeToString(invalidJSON)
+
+	_, err := token.Decode(encoded)
+	if err == nil {
+		t.Fatal("expected error for valid base64 containing invalid JSON")
+	}
+}
+
+// --- TestDelegate_NilParent ---
+
+func TestDelegate_NilParent(t *testing.T) {
+	agentKP := newKeyPair(t)
+	_, err := token.Delegate(nil, "agent://child", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(1800),
+	}, agentKP.PrivateKey)
+	if err == nil {
+		t.Fatal("expected error for nil parent")
+	}
+}
+
+// --- TestDelegate_ZeroExpiry ---
+
+func TestDelegate_ZeroExpiry(t *testing.T) {
+	ks := newRootKeyStore(t)
+	agentKP := newKeyPair(t)
+
+	parentACT, _ := token.IssueRootToken("agent://parent", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(3600),
+	}, ks.PrivateKey())
+
+	_, err := token.Delegate(parentACT, "agent://child", []string{"read"}, token.BlockConditions{
+		ExpiresAt: 0,
+	}, agentKP.PrivateKey)
+	if err == nil {
+		t.Fatal("expected error for zero expiry in Delegate")
+	}
+}
+
+// --- TestVerify_UserIDPropagated ---
+
+func TestVerify_UserIDPropagated(t *testing.T) {
+	ks := newRootKeyStore(t)
+	opts := token.RootTokenOptions{UserID: "user-123"}
+	act, err := token.IssueRootTokenWithOptions("agent://uid-agent", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(3600),
+	}, ks.PrivateKey(), opts)
+	if err != nil {
+		t.Fatalf("IssueRootTokenWithOptions: %v", err)
+	}
+	encoded, _ := token.Encode(act)
+
+	resolver := &staticKeyResolver{keys: map[string]string{
+		ks.KeyID(): agcrypto.EncodePublicKeyBase64(ks.PublicKey()),
+	}}
+	verified, err := token.Verify(encoded, resolver, &noopRevocationChecker{})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if verified.UserID != "user-123" {
+		t.Fatalf("expected UserID=user-123, got %q", verified.UserID)
+	}
+}
+
+// --- TestVerify_NilRevocationChecker ---
+
+func TestVerify_NilRevocationChecker(t *testing.T) {
+	ks := newRootKeyStore(t)
+	act, _ := token.IssueRootToken("agent://nil-checker", []string{"read"}, token.BlockConditions{
+		ExpiresAt: futureExp(3600),
+	}, ks.PrivateKey())
+	encoded, _ := token.Encode(act)
+
+	resolver := &staticKeyResolver{keys: map[string]string{
+		ks.KeyID(): agcrypto.EncodePublicKeyBase64(ks.PublicKey()),
+	}}
+	// nil revocationChecker should be accepted without panic.
+	verified, err := token.Verify(encoded, resolver, nil)
+	if err != nil {
+		t.Fatalf("Verify with nil revocation checker: %v", err)
+	}
+	if verified.AgentID != "agent://nil-checker" {
+		t.Fatalf("expected AgentID=agent://nil-checker, got %s", verified.AgentID)
+	}
+}
+
+// containsStr is a simple substring check helper for test assertions.
+func containsStr(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		func() bool {
+			for i := 0; i <= len(s)-len(substr); i++ {
+				if s[i:i+len(substr)] == substr {
+					return true
+				}
+			}
+			return false
+		}())
+}
+

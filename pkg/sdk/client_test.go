@@ -170,3 +170,238 @@ func TestOldAPIAbsence(t *testing.T) {
 	// TestDelegateTokenLocallyBodyHasNoPK test would catch any use of it.
 	t.Log("DelegateToken and DelegateTokenRequest with ParentAgentKey are confirmed absent (compiler verified)")
 }
+
+// TestRegisterAgent verifies that RegisterAgent parses the server response correctly.
+func TestRegisterAgent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"agent":{"id":"agent://test-id","name":"test"},"private_key":"abc"}`))
+	}))
+	defer srv.Close()
+
+	client := sdk.NewClient(srv.URL, "test-key")
+	agent, key, err := client.RegisterAgent(context.Background(), sdk.RegisterAgentRequest{Name: "test"})
+	if err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+	if agent == nil {
+		t.Fatal("expected non-nil agent")
+	}
+	if agent.ID != "agent://test-id" {
+		t.Errorf("expected ID=agent://test-id, got %s", agent.ID)
+	}
+	if agent.Name != "test" {
+		t.Errorf("expected name=test, got %s", agent.Name)
+	}
+	if key != "abc" {
+		t.Errorf("expected private_key=abc, got %s", key)
+	}
+}
+
+// TestGetAgent_WithPrefix verifies that GetAgent strips the "agent://" prefix from the ID.
+func TestGetAgent_WithPrefix(t *testing.T) {
+	var capturedPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"agent://test-id","name":"test-agent"}`))
+	}))
+	defer srv.Close()
+
+	client := sdk.NewClient(srv.URL, "test-key")
+	agent, err := client.GetAgent(context.Background(), "agent://test-id")
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	if capturedPath != "/api/v1/agents/test-id" {
+		t.Errorf("expected path /api/v1/agents/test-id, got %s", capturedPath)
+	}
+	if agent.Name != "test-agent" {
+		t.Errorf("expected name=test-agent, got %s", agent.Name)
+	}
+}
+
+// TestGetAgent_WithoutPrefix verifies that GetAgent works when no "agent://" prefix is present.
+func TestGetAgent_WithoutPrefix(t *testing.T) {
+	var capturedPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"test-id","name":"bare"}`))
+	}))
+	defer srv.Close()
+
+	client := sdk.NewClient(srv.URL, "test-key")
+	_, err := client.GetAgent(context.Background(), "test-id")
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	if capturedPath != "/api/v1/agents/test-id" {
+		t.Errorf("expected path /api/v1/agents/test-id, got %s", capturedPath)
+	}
+}
+
+// TestRevokeAgent verifies that RevokeAgent sends a request and returns no error on 200.
+func TestRevokeAgent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := sdk.NewClient(srv.URL, "test-key")
+	err := client.RevokeAgent(context.Background(), "agent://test-id", true)
+	if err != nil {
+		t.Fatalf("RevokeAgent: %v", err)
+	}
+}
+
+// TestIssueToken verifies that IssueToken returns the encoded token string.
+func TestIssueToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"token":"encoded-token","token_id":"tid-1"}`))
+	}))
+	defer srv.Close()
+
+	client := sdk.NewClient(srv.URL, "test-key")
+	tok, err := client.IssueToken(context.Background(), sdk.IssueTokenRequest{
+		AgentID:      "agent://x",
+		Capabilities: []string{"read"},
+	})
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	if tok != "encoded-token" {
+		t.Errorf("expected token=encoded-token, got %s", tok)
+	}
+}
+
+// TestVerifyToken verifies that VerifyToken returns the parsed response including AgentID.
+func TestVerifyToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"token_id":"t1","agent_id":"agent://x","capabilities":["read"],"chain_depth":1}`))
+	}))
+	defer srv.Close()
+
+	client := sdk.NewClient(srv.URL, "test-key")
+	resp, err := client.VerifyToken(context.Background(), "some-encoded-token")
+	if err != nil {
+		t.Fatalf("VerifyToken: %v", err)
+	}
+	if resp.AgentID != "agent://x" {
+		t.Errorf("expected AgentID=agent://x, got %s", resp.AgentID)
+	}
+	if resp.TokenID != "t1" {
+		t.Errorf("expected TokenID=t1, got %s", resp.TokenID)
+	}
+	if resp.ChainDepth != 1 {
+		t.Errorf("expected ChainDepth=1, got %d", resp.ChainDepth)
+	}
+}
+
+// TestRevokeToken verifies that RevokeToken returns no error on 200.
+func TestRevokeToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := sdk.NewClient(srv.URL, "test-key")
+	err := client.RevokeToken(context.Background(), "tid-1", "expired")
+	if err != nil {
+		t.Fatalf("RevokeToken: %v", err)
+	}
+}
+
+// TestDoJSON_4xxError_WithDetail verifies that a 4xx error with a "detail" field surfaces the detail message.
+func TestDoJSON_4xxError_WithDetail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"detail":"forbidden"}`))
+	}))
+	defer srv.Close()
+
+	client := sdk.NewClient(srv.URL, "test-key")
+	_, err := client.GetAgent(context.Background(), "some-id")
+	if err == nil {
+		t.Fatal("expected error on 403 response")
+	}
+	if !strings.Contains(err.Error(), "forbidden") {
+		t.Errorf("expected error to contain 'forbidden', got: %v", err)
+	}
+}
+
+// TestDoJSON_4xxError_NoDetail verifies that a 5xx error without a detail field includes the status code.
+func TestDoJSON_4xxError_NoDetail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`plain error`))
+	}))
+	defer srv.Close()
+
+	client := sdk.NewClient(srv.URL, "test-key")
+	_, err := client.GetAgent(context.Background(), "some-id")
+	if err == nil {
+		t.Fatal("expected error on 500 response")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("expected error to contain '500', got: %v", err)
+	}
+}
+
+// TestDoJSON_AuthHeader verifies that the Authorization header is set to "Bearer <key>".
+func TestDoJSON_AuthHeader(t *testing.T) {
+	var capturedAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"agent://x","name":"x"}`))
+	}))
+	defer srv.Close()
+
+	client := sdk.NewClient(srv.URL, "test-key")
+	_, err := client.GetAgent(context.Background(), "x")
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	if capturedAuth != "Bearer test-key" {
+		t.Errorf("expected Authorization=Bearer test-key, got %q", capturedAuth)
+	}
+}
+
+// TestDelegateTokenLocally_InvalidParentToken verifies that an invalid parent token string causes a decode error.
+func TestDelegateTokenLocally_InvalidParentToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	client := sdk.NewClient(srv.URL, "test-key")
+	_, err = client.DelegateTokenLocally(
+		context.Background(),
+		"not-a-valid-token",
+		"agent://child",
+		[]string{"read"},
+		token.BlockConditions{ExpiresAt: time.Now().Add(time.Hour).Unix()},
+		priv,
+	)
+	if err == nil {
+		t.Fatal("expected error for invalid parent token")
+	}
+	if !strings.Contains(err.Error(), "decode") {
+		t.Errorf("expected error to contain 'decode', got: %v", err)
+	}
+}

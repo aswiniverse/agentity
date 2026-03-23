@@ -171,3 +171,188 @@ func TestApprovalService_AlreadyDecided(t *testing.T) {
 		t.Fatal("expected error on second Approve, got nil")
 	}
 }
+
+func TestApprovalService_Get_NotFound(t *testing.T) {
+	svc := newService(t, "http://localhost:8080")
+	ctx := context.Background()
+
+	_, err := svc.Get(ctx, "nonexistent-id")
+	if err == nil {
+		t.Fatal("expected error for nonexistent ID, got nil")
+	}
+}
+
+func TestApprovalService_Approve_NotFound(t *testing.T) {
+	svc := newService(t, "http://localhost:8080")
+	ctx := context.Background()
+
+	err := svc.Approve(ctx, "nonexistent-id", "approver")
+	if err == nil {
+		t.Fatal("expected error for nonexistent ID, got nil")
+	}
+}
+
+func TestApprovalService_Deny_NotFound(t *testing.T) {
+	svc := newService(t, "http://localhost:8080")
+	ctx := context.Background()
+
+	err := svc.Deny(ctx, "nonexistent-id", "approver")
+	if err == nil {
+		t.Fatal("expected error for nonexistent ID, got nil")
+	}
+}
+
+func TestApprovalService_ListPending_Empty(t *testing.T) {
+	svc := newService(t, "http://localhost:8080")
+	ctx := context.Background()
+
+	pending, err := svc.ListPending(ctx, "agent-no-requests")
+	if err != nil {
+		t.Fatalf("ListPending: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("expected empty slice, got %d items", len(pending))
+	}
+}
+
+func TestApprovalService_ListPending_MultiAgent(t *testing.T) {
+	svc := newService(t, "http://localhost:8080")
+	ctx := context.Background()
+
+	// Create requests for agent-A.
+	for i := 0; i < 2; i++ {
+		_, err := svc.RequestApproval(ctx, "agent-A", "tok-A", "res", "reason", "")
+		if err != nil {
+			t.Fatalf("RequestApproval agent-A %d: %v", i, err)
+		}
+	}
+
+	// Create requests for agent-B.
+	_, err := svc.RequestApproval(ctx, "agent-B", "tok-B", "res", "reason", "")
+	if err != nil {
+		t.Fatalf("RequestApproval agent-B: %v", err)
+	}
+
+	pending, err := svc.ListPending(ctx, "agent-A")
+	if err != nil {
+		t.Fatalf("ListPending: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Errorf("expected 2 pending for agent-A, got %d", len(pending))
+	}
+	for _, p := range pending {
+		if p.AgentID != "agent-A" {
+			t.Errorf("expected agent-A, got %s", p.AgentID)
+		}
+	}
+}
+
+func TestApprovalService_Deny_ThenGetStatus(t *testing.T) {
+	svc := newService(t, "http://localhost:8080")
+	ctx := context.Background()
+
+	ar, err := svc.RequestApproval(ctx, "agent-deny-check", "tok-dc", "resource", "reason", "")
+	if err != nil {
+		t.Fatalf("RequestApproval: %v", err)
+	}
+
+	if err := svc.Deny(ctx, ar.ID, "security@example.com"); err != nil {
+		t.Fatalf("Deny: %v", err)
+	}
+
+	got, err := svc.Get(ctx, ar.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != approval.StatusDenied {
+		t.Errorf("expected denied, got %s", got.Status)
+	}
+	if got.ApproverID != "security@example.com" {
+		t.Errorf("expected approverID security@example.com, got %s", got.ApproverID)
+	}
+	if got.DecidedAt == nil {
+		t.Error("expected DecidedAt to be set after deny")
+	}
+}
+
+func TestWebhookURL_InvalidScheme_FTP(t *testing.T) {
+	svc := newService(t, "http://localhost:8080")
+	ctx := context.Background()
+
+	_, err := svc.RequestApproval(ctx, "agent-ftp", "tok-ftp", "resource", "reason", "ftp://example.com/hook")
+	if err == nil {
+		t.Fatal("expected error for ftp:// webhook URL, got nil")
+	}
+}
+
+func TestWebhookURL_InvalidScheme_File(t *testing.T) {
+	svc := newService(t, "http://localhost:8080")
+	ctx := context.Background()
+
+	_, err := svc.RequestApproval(ctx, "agent-file", "tok-file", "resource", "reason", "file:///etc/passwd")
+	if err == nil {
+		t.Fatal("expected error for file:// webhook URL, got nil")
+	}
+}
+
+func TestWebhookURL_PrivateIP_10x(t *testing.T) {
+	svc := newService(t, "http://localhost:8080")
+	ctx := context.Background()
+
+	_, err := svc.RequestApproval(ctx, "agent-priv10", "tok-priv10", "resource", "reason", "http://10.0.0.1/hook")
+	if err == nil {
+		t.Fatal("expected error for private IP 10.0.0.1 webhook URL, got nil")
+	}
+}
+
+func TestWebhookURL_PrivateIP_192168(t *testing.T) {
+	svc := newService(t, "http://localhost:8080")
+	ctx := context.Background()
+
+	_, err := svc.RequestApproval(ctx, "agent-priv192", "tok-priv192", "resource", "reason", "http://192.168.1.1/hook")
+	if err == nil {
+		t.Fatal("expected error for private IP 192.168.1.1 webhook URL, got nil")
+	}
+}
+
+func TestWebhookURL_Localhost(t *testing.T) {
+	svc := newService(t, "http://localhost:8080")
+	ctx := context.Background()
+
+	_, err := svc.RequestApproval(ctx, "agent-lo", "tok-lo", "resource", "reason", "http://127.0.0.1/hook")
+	if err == nil {
+		t.Fatal("expected error for loopback 127.0.0.1 webhook URL, got nil")
+	}
+}
+
+func TestWebhookURL_NoWebhook_Succeeds(t *testing.T) {
+	svc := newService(t, "http://localhost:8080")
+	ctx := context.Background()
+
+	ar, err := svc.RequestApproval(ctx, "agent-nowh", "tok-nowh", "resource", "reason", "")
+	if err != nil {
+		t.Fatalf("expected success with empty webhookURL, got: %v", err)
+	}
+	if ar.Status != approval.StatusPending {
+		t.Errorf("expected pending, got %s", ar.Status)
+	}
+}
+
+func TestApprovalService_AlreadyDenied_SecondDeny(t *testing.T) {
+	svc := newService(t, "http://localhost:8080")
+	ctx := context.Background()
+
+	ar, err := svc.RequestApproval(ctx, "agent-dd", "tok-dd", "resource", "reason", "")
+	if err != nil {
+		t.Fatalf("RequestApproval: %v", err)
+	}
+
+	if err := svc.Deny(ctx, ar.ID, "denier"); err != nil {
+		t.Fatalf("first Deny: %v", err)
+	}
+
+	err = svc.Deny(ctx, ar.ID, "denier2")
+	if err == nil {
+		t.Fatal("expected error on second Deny of already-denied request, got nil")
+	}
+}
