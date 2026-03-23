@@ -92,21 +92,37 @@ func (e *Engine) LoadFromStore(ctx context.Context) error {
 		return fmt.Errorf("load policies from store: %w", err)
 	}
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	// Compile all policies into local variables first; only swap into the engine
+	// if ALL compile successfully to avoid a partial/inconsistent state.
+	localPolicies := make([]Policy, 0, len(policies))
+	localCompiled := make(map[string]cel.Program, len(policies))
 
 	for _, p := range policies {
 		ast, issues := e.env.Compile(p.Expression)
 		if issues != nil && issues.Err() != nil {
+			e.mu.Lock()
+			e.storeFailed = true
+			e.mu.Unlock()
 			return fmt.Errorf("compile policy %q expression: %w", p.Name, issues.Err())
 		}
 		prg, err := e.env.Program(ast)
 		if err != nil {
+			e.mu.Lock()
+			e.storeFailed = true
+			e.mu.Unlock()
 			return fmt.Errorf("build program for policy %q: %w", p.Name, err)
 		}
-		e.compiled[p.ID] = prg
-		e.policies = append(e.policies, p)
+		localCompiled[p.ID] = prg
+		localPolicies = append(localPolicies, p)
 	}
+
+	// All compiled successfully — swap atomically.
+	e.mu.Lock()
+	e.policies = localPolicies
+	e.compiled = localCompiled
+	e.storeFailed = false
+	e.mu.Unlock()
+
 	// Policies from store are already ordered by priority DESC (ListAll guarantees this).
 	return nil
 }
@@ -204,13 +220,16 @@ func (e *Engine) GetPolicy(id string) (*Policy, error) {
 // Evaluate runs all policies against the input. Deny policies take precedence.
 // Returns whether access is allowed, which policy decided, and a reason.
 func (e *Engine) Evaluate(_ context.Context, input PolicyInput) (bool, string, error) {
-	e.mu.RLock()
-	policies := make([]Policy, len(e.policies))
-	copy(policies, e.policies)
-	e.mu.RUnlock()
+	// FIX 13: nil-guard capabilities to avoid CEL runtime errors.
+	if input.Capabilities == nil {
+		input.Capabilities = []string{}
+	}
 
+	// FIX 14: read both storeFailed and policies under a single RLock to eliminate TOCTOU.
 	e.mu.RLock()
 	storeFailed := e.storeFailed
+	policies := make([]Policy, len(e.policies))
+	copy(policies, e.policies)
 	e.mu.RUnlock()
 
 	if storeFailed {

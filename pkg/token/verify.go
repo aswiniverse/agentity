@@ -47,6 +47,9 @@ func Verify(encoded string, keyResolver KeyResolver, revocationCheck RevocationC
 		if block.Conditions.ExpiresAt > 0 && block.Conditions.ExpiresAt < now {
 			return nil, fmt.Errorf("block %d has expired", i)
 		}
+		if block.Conditions.ExpiresAt == 0 {
+			return nil, fmt.Errorf("block %d: missing expiry (ExpiresAt must be set)", i)
+		}
 
 		// Check not-before.
 		if block.Conditions.NotBefore > 0 && block.Conditions.NotBefore > now {

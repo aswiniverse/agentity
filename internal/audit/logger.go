@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -56,10 +57,17 @@ type AuditFilter struct {
 
 // Logger records and signs audit entries.
 type Logger struct {
-	mu         sync.RWMutex
-	entries    []AuditEntry
-	signingKey ed25519.PrivateKey
-	store      AuditStore
+	mu              sync.RWMutex
+	entries         []AuditEntry
+	signingKey      ed25519.PrivateKey
+	store           AuditStore
+	persistFailures uint64 // incremented atomically when all retries are exhausted
+}
+
+// PersistFailures returns the number of audit entries that could not be persisted
+// to the durable store after all retries were exhausted.
+func (l *Logger) PersistFailures() uint64 {
+	return atomic.LoadUint64(&l.persistFailures)
 }
 
 // NewLogger creates a new audit logger with the given signing key.
@@ -129,8 +137,9 @@ func (l *Logger) append(entry AuditEntry) (*AuditEntry, error) {
 	l.mu.Lock()
 	// Evict oldest 10% when cap is reached to prevent unbounded growth.
 	if len(l.entries) >= maxEntries {
-		evict := maxEntries / 10
-		l.entries = l.entries[evict:]
+		evictCount := maxEntries / 10
+		l.entries = l.entries[evictCount:]
+		log.Printf("WARN audit: in-memory buffer full, evicting %d oldest entries", evictCount)
 	}
 	l.entries = append(l.entries, entry)
 	l.mu.Unlock()
@@ -139,15 +148,19 @@ func (l *Logger) append(entry AuditEntry) (*AuditEntry, error) {
 	if l.store != nil {
 		go func(e AuditEntry) {
 			const maxRetries = 3
+			var lastErr error
 			for attempt := 1; attempt <= maxRetries; attempt++ {
 				if err := l.store.Insert(&e); err == nil {
 					return
-				} else if attempt == maxRetries {
-					log.Printf("audit: failed to persist entry %s after %d attempts: %v", e.ID, maxRetries, err)
 				} else {
-					time.Sleep(100 * time.Millisecond)
+					lastErr = err
+					if attempt < maxRetries {
+						time.Sleep(100 * time.Millisecond)
+					}
 				}
 			}
+			atomic.AddUint64(&l.persistFailures, 1)
+			log.Printf("WARN audit: failed to persist entry %s after 3 retries: %v", e.ID, lastErr)
 		}(entry)
 	}
 

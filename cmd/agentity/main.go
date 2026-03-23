@@ -57,6 +57,7 @@ func runServer(configFile string, devMode bool, port int, logLevel string) error
 
 	if devMode {
 		cfg = config.LoadDev(port)
+		cfg.Dev = true
 	} else {
 		cfg, err = config.Load(configFile)
 		if err != nil {
@@ -218,7 +219,7 @@ func runServer(configFile string, devMode bool, port int, logLevel string) error
 		ApprovalService:  approvalService,
 		AdminAPIKey:      cfg.Auth.AdminAPIKey,
 		IssuerURL:        cfg.OIDC.IssuerURL,
-		AllowedOrigins:   []string{"*"}, // restrict in production via config
+		AllowedOrigins:   corsOrigins(cfg, devMode),
 		ReadinessCheck:   readinessCheck,
 	})
 
@@ -231,6 +232,21 @@ func runServer(configFile string, devMode bool, port int, logLevel string) error
 		Msg("Agentity server starting")
 
 	return srv.Start()
+}
+
+// corsOrigins returns the allowed CORS origins based on configuration.
+// In dev mode, defaults to ["*"] if not explicitly configured.
+// In production, if no origins are set, warns and uses the server's own origin.
+func corsOrigins(cfg *config.Config, devMode bool) []string {
+	if len(cfg.AllowedOrigins) > 0 {
+		return cfg.AllowedOrigins
+	}
+	if devMode {
+		return []string{"*"}
+	}
+	// Production with no origins configured: default to own origin only.
+	fmt.Fprintf(os.Stderr, "WARN: AGENTITY_CORS_ALLOWED_ORIGINS is not set; defaulting to server's own origin\n")
+	return []string{fmt.Sprintf("http://localhost:%d", cfg.Server.Port)}
 }
 
 // extractHost returns a safe host string from a DSN for logging (no passwords).
