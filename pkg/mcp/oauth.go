@@ -10,7 +10,11 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
+
+// mcpHTTPClient is used for all MCP OAuth HTTP requests with a fixed timeout.
+var mcpHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 // OAuthConfig holds OAuth 2.1 configuration for MCP servers.
 type OAuthConfig struct {
@@ -107,7 +111,7 @@ func ExchangeCodeForToken(ctx context.Context, config OAuthConfig, code, codeVer
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mcpHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token request: %w", err)
 	}

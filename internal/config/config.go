@@ -10,14 +10,16 @@ import (
 
 // Config is the top-level application configuration.
 type Config struct {
-	Server ServerConfig `mapstructure:"server"`
-	Store  StoreConfig  `mapstructure:"store"`
-	Redis  RedisConfig  `mapstructure:"redis"`
-	Crypto CryptoConfig `mapstructure:"crypto"`
-	Auth   AuthConfig   `mapstructure:"auth"`
-	Log    LogConfig    `mapstructure:"log"`
-	OTEL   OTELConfig   `mapstructure:"otel"`
-	OIDC   OIDCConfig   `mapstructure:"oidc"`
+	Server         ServerConfig `mapstructure:"server"`
+	Store          StoreConfig  `mapstructure:"store"`
+	Redis          RedisConfig  `mapstructure:"redis"`
+	Crypto         CryptoConfig `mapstructure:"crypto"`
+	Auth           AuthConfig   `mapstructure:"auth"`
+	Log            LogConfig    `mapstructure:"log"`
+	OTEL           OTELConfig   `mapstructure:"otel"`
+	OIDC           OIDCConfig   `mapstructure:"oidc"`
+	AllowedOrigins []string     `mapstructure:"allowed_origins"`
+	Dev            bool         `mapstructure:"dev"`
 }
 
 // ServerConfig holds HTTP server settings.
@@ -114,6 +116,19 @@ func Load(configFile string) (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
+
+	// Load AGENTITY_CORS_ALLOWED_ORIGINS (comma-separated) if not already set via viper.
+	if len(cfg.AllowedOrigins) == 0 {
+		if raw := v.GetString("cors_allowed_origins"); raw != "" {
+			for _, o := range strings.Split(raw, ",") {
+				o = strings.TrimSpace(o)
+				if o != "" {
+					cfg.AllowedOrigins = append(cfg.AllowedOrigins, o)
+				}
+			}
+		}
+	}
+
 	return &cfg, nil
 }
 

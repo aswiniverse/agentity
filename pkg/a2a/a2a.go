@@ -29,7 +29,7 @@ import (
 // DelegationEngine is the interface used to verify ACT tokens.
 // It matches the method signature of delegation.Engine.Verify.
 type DelegationEngine interface {
-	VerifyACT(ctx context.Context, encodedToken string) (*token.VerifiedACT, error)
+	Verify(ctx context.Context, encodedToken string) (*token.VerifiedACT, error)
 }
 
 // CapabilityMap maps A2A skill IDs to required ACT capabilities.
@@ -113,7 +113,7 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 		encodedToken := strings.TrimPrefix(auth, "Bearer ")
 
 		// Verify the token.
-		act, err := m.engine.VerifyACT(r.Context(), encodedToken)
+		act, err := m.engine.Verify(r.Context(), encodedToken)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "invalid token")
 			return

@@ -15,6 +15,11 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// oidcHTTPClient is used for all OIDC/JWKS HTTP requests with a fixed timeout.
+var oidcHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
+const jwksCacheMaxSize = 100
+
 // jwksCache caches JWKS key sets with a TTL.
 var jwksCache = &jwksCacheStore{
 	entries: make(map[string]*jwksCacheEntry),
@@ -62,7 +67,7 @@ func fetchJWKS(ctx context.Context, jwksURL string) (map[string]*rsa.PublicKey, 
 		return nil, fmt.Errorf("create JWKS request: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oidcHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch JWKS from %s: %w", jwksURL, err)
 	}
@@ -98,6 +103,18 @@ func fetchJWKS(ctx context.Context, jwksURL string) (map[string]*rsa.PublicKey, 
 	jwksCache.entries[jwksURL] = &jwksCacheEntry{
 		keys:      keys,
 		fetchedAt: time.Now(),
+	}
+	// Evict the oldest entry if cache exceeds the maximum size.
+	if len(jwksCache.entries) > jwksCacheMaxSize {
+		var oldestURL string
+		var oldestTime time.Time
+		for u, e := range jwksCache.entries {
+			if oldestURL == "" || e.fetchedAt.Before(oldestTime) {
+				oldestURL = u
+				oldestTime = e.fetchedAt
+			}
+		}
+		delete(jwksCache.entries, oldestURL)
 	}
 	jwksCache.mu.Unlock()
 

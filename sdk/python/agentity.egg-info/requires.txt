@@ -1,0 +1,13 @@
+httpx>=0.27
+cryptography>=42
+
+[async]
+anyio>=4
+
+[dev]
+pytest>=8
+pytest-asyncio>=0.23
+respx>=0.21
+
+[langchain]
+langchain-core>=0.2

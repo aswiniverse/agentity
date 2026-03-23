@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -19,6 +21,53 @@ type ApprovalService struct {
 // NewApprovalService creates a new ApprovalService.
 func NewApprovalService(store ApprovalStore, serverBase string) *ApprovalService {
 	return &ApprovalService{store: store, serverBase: serverBase}
+}
+
+// privateIPNets contains the IP ranges that must be blocked for SSRF protection.
+var privateIPNets []*net.IPNet
+
+func init() {
+	for _, cidr := range []string{
+		"127.0.0.0/8",
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"169.254.0.0/16",
+		"::1/128",
+		"fc00::/7",
+	} {
+		_, ipNet, _ := net.ParseCIDR(cidr)
+		privateIPNets = append(privateIPNets, ipNet)
+	}
+}
+
+// validateWebhookURL rejects non-http/https schemes, empty hosts, and private/link-local IPs.
+func validateWebhookURL(u string) error {
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return fmt.Errorf("invalid webhook URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("webhook URL scheme must be http or https, got %q", parsed.Scheme)
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return fmt.Errorf("webhook URL has empty host")
+	}
+	// Resolve host to IP(s) and check for private ranges.
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		// If we cannot resolve, allow it through — DNS may be unavailable at validation time.
+		return nil
+	}
+	for _, ip := range ips {
+		for _, block := range privateIPNets {
+			if block.Contains(ip) {
+				return fmt.Errorf("webhook URL resolves to private/link-local address %s", ip)
+			}
+		}
+	}
+	return nil
 }
 
 // RequestApproval creates an approval request and optionally fires a webhook (non-blocking).
@@ -35,6 +84,9 @@ func (s *ApprovalService) RequestApproval(ctx context.Context, agentID, tokenID,
 	}
 
 	if webhookURL != "" {
+		if err := validateWebhookURL(webhookURL); err != nil {
+			return nil, fmt.Errorf("webhook URL validation failed: %w", err)
+		}
 		go s.fireWebhook(req)
 	}
 

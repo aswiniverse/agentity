@@ -19,7 +19,7 @@ type mockEngine struct {
 	err error
 }
 
-func (m *mockEngine) VerifyACT(_ context.Context, _ string) (*token.VerifiedACT, error) {
+func (m *mockEngine) Verify(_ context.Context, _ string) (*token.VerifiedACT, error) {
 	return m.act, m.err
 }
 

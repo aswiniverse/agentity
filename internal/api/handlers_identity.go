@@ -39,6 +39,8 @@ func (h *IdentityHandlers) RegisterAgent(w http.ResponseWriter, r *http.Request)
 	}
 	metrics.AgentsRegistered.Inc()
 
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"agent":       agent,
 		"private_key": privateKey,
@@ -153,7 +155,10 @@ func (h *IdentityHandlers) RevokeAgent(w http.ResponseWriter, r *http.Request) {
 	// rejects tokens belonging to revoked agents across all instances.
 	if h.revReg != nil {
 		for _, aid := range toRevoke {
-			_ = h.revReg.RevokeAgent(r.Context(), aid, "agent-revoked", req.Cascade)
+			if err := h.revReg.RevokeAgent(r.Context(), aid, "agent-revoked", req.Cascade); err != nil {
+				writeProblem(w, http.StatusInternalServerError, "https://agentity.dev/errors/internal", "Revocation Failed", "Failed to write to revocation registry: "+err.Error())
+				return
+			}
 		}
 	}
 
@@ -184,6 +189,8 @@ func (h *IdentityHandlers) RotateKey(w http.ResponseWriter, r *http.Request) {
 		h.keyResolver.InvalidateCache(oldKeyID)
 	}
 
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"agent":       agent,
 		"private_key": privateKey,

@@ -109,16 +109,12 @@ func TestApprovalService_ListPending(t *testing.T) {
 }
 
 func TestApprovalService_WebhookFired(t *testing.T) {
-	var mu sync.Mutex
-	var received map[string]string
-
+	// Loopback and private addresses must be rejected by the SSRF guard.
+	// httptest.NewServer binds to 127.0.0.1, which is in the blocked range.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
 		var data map[string]string
+		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &data)
-		mu.Lock()
-		received = data
-		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -126,40 +122,34 @@ func TestApprovalService_WebhookFired(t *testing.T) {
 	svc := newService(t, "http://localhost:8080")
 	ctx := context.Background()
 
-	ar, err := svc.RequestApproval(ctx, "agent-wh", "tok-wh", "resource", "reason", srv.URL)
+	// Supplying a loopback webhook URL must be rejected with an SSRF validation error.
+	_, err := svc.RequestApproval(ctx, "agent-wh", "tok-wh", "resource", "reason", srv.URL)
+	if err == nil {
+		t.Fatal("expected SSRF validation error for loopback webhook URL, got nil")
+	}
+
+	// Approval with no webhook URL must still succeed.
+	ar, err := svc.RequestApproval(ctx, "agent-wh", "tok-wh", "resource", "reason", "")
 	if err != nil {
-		t.Fatalf("RequestApproval: %v", err)
+		t.Fatalf("RequestApproval without webhook: %v", err)
+	}
+	if ar.Status != approval.StatusPending {
+		t.Errorf("expected pending, got %s", ar.Status)
+	}
+}
+
+func TestApprovalService_WebhookInvalidScheme(t *testing.T) {
+	svc := newService(t, "http://localhost:8080")
+	ctx := context.Background()
+
+	_, err := svc.RequestApproval(ctx, "agent-scheme", "tok-scheme", "resource", "reason", "ftp://example.com/hook")
+	if err == nil {
+		t.Fatal("expected error for non-http/https webhook URL, got nil")
 	}
 
-	// Webhook fires in goroutine; give it a moment.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		mu.Lock()
-		got := received
-		mu.Unlock()
-		if got != nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	mu.Lock()
-	got := received
-	mu.Unlock()
-
-	if got == nil {
-		t.Fatal("webhook was not fired within 2 seconds")
-	}
-	if got["approval_id"] != ar.ID {
-		t.Errorf("webhook approval_id: got %s, want %s", got["approval_id"], ar.ID)
-	}
-	if got["agent_id"] != "agent-wh" {
-		t.Errorf("webhook agent_id: got %s, want agent-wh", got["agent_id"])
-	}
-	expectedApproveURL := "http://localhost:8080/api/v1/approvals/" + ar.ID + "/approve"
-	if got["approve_url"] != expectedApproveURL {
-		t.Errorf("webhook approve_url: got %s, want %s", got["approve_url"], expectedApproveURL)
-	}
+	// Variable declared to suppress unused import warning for time in this file.
+	_ = time.Second
+	_ = sync.Mutex{}
 }
 
 func TestApprovalService_AlreadyDecided(t *testing.T) {

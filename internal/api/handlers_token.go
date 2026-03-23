@@ -254,18 +254,21 @@ func (h *TokenHandlers) VerifyToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cheap decode to extract agent ID for rate limiting before expensive crypto verify.
+	if decoded, decodeErr := token.Decode(req.Token); decodeErr == nil && len(decoded.Blocks) > 0 {
+		agentID := decoded.Blocks[0].Subject
+		if !h.agentLimiter.Allow(agentID) {
+			writeProblem(w, http.StatusTooManyRequests, "https://agentity.dev/errors/rate-limited", "Rate Limited", "Too many verification requests for this agent. Please slow down.")
+			return
+		}
+	}
+
 	verifyStart := time.Now()
 	verified, err := h.delegationEngine.Verify(r.Context(), req.Token)
 	metrics.VerificationDuration.Observe(time.Since(verifyStart).Seconds())
 	if err != nil {
 		metrics.TokensRejected.Inc()
 		writeProblem(w, http.StatusUnauthorized, "https://agentity.dev/errors/token-invalid", "Token Invalid", err.Error())
-		return
-	}
-
-	// Per-agent rate limit for verification.
-	if !h.agentLimiter.Allow(verified.AgentID) {
-		writeProblem(w, http.StatusTooManyRequests, "https://agentity.dev/errors/rate-limited", "Rate Limited", "Too many verification requests for this agent. Please slow down.")
 		return
 	}
 

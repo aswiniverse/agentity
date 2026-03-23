@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/subtle"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -316,8 +317,8 @@ func (rl *RateLimiter) cleanup() {
 func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := r.RemoteAddr
-		if idx := strings.LastIndex(ip, ":"); idx != -1 {
-			ip = ip[:idx]
+		if host, _, err := net.SplitHostPort(ip); err == nil {
+			ip = host
 		}
 
 		now := time.Now()
