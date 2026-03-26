@@ -72,6 +72,14 @@ func validateWebhookURL(u string) error {
 
 // RequestApproval creates an approval request and optionally fires a webhook (non-blocking).
 func (s *ApprovalService) RequestApproval(ctx context.Context, agentID, tokenID, resource, reason, webhookURL string) (*ApprovalRequest, error) {
+	// Validate webhook URL before persisting to avoid orphaned records in the store
+	// when URL validation subsequently fails.
+	if webhookURL != "" {
+		if err := validateWebhookURL(webhookURL); err != nil {
+			return nil, fmt.Errorf("webhook URL validation failed: %w", err)
+		}
+	}
+
 	req := &ApprovalRequest{
 		AgentID:    agentID,
 		TokenID:    tokenID,
@@ -84,9 +92,6 @@ func (s *ApprovalService) RequestApproval(ctx context.Context, agentID, tokenID,
 	}
 
 	if webhookURL != "" {
-		if err := validateWebhookURL(webhookURL); err != nil {
-			return nil, fmt.Errorf("webhook URL validation failed: %w", err)
-		}
 		go s.fireWebhook(req)
 	}
 

@@ -199,9 +199,24 @@ func runServer(configFile string, devMode bool, port int, logLevel string) error
 		logger.Warn().Msg("AGENTITY_VAULT_KEY not set; credential vault endpoints disabled")
 	}
 
-	// Initialize approval service (always uses memory store; Postgres can be wired later).
-	approvalStore := approval.NewMemoryApprovalStore()
-	serverBase := fmt.Sprintf("http://localhost:%d", cfg.Server.Port)
+	// Initialize approval service; use postgres store when available so approval
+	// requests survive restarts.
+	var approvalStore approval.ApprovalStore
+	if pgStore != nil {
+		approvalStore = approval.NewPostgresApprovalStore(pgStore.Pool())
+	} else {
+		approvalStore = approval.NewMemoryApprovalStore()
+	}
+
+	// serverBase is the externally-reachable URL used for approve/deny webhook links.
+	// AGENTITY_SERVER_SERVER_URL must be set in production; falls back to localhost for dev.
+	serverBase := cfg.Server.ServerURL
+	if serverBase == "" {
+		serverBase = fmt.Sprintf("http://localhost:%d", cfg.Server.Port)
+		if !devMode {
+			logger.Warn().Msg("AGENTITY_SERVER_SERVER_URL is not set; approval webhook links will point to localhost and may not be reachable")
+		}
+	}
 	approvalService := approval.NewApprovalService(approvalStore, serverBase)
 
 	// Build router.

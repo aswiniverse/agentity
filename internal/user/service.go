@@ -2,8 +2,8 @@ package user
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
 )
 
 // UserService provides business logic for user-agent binding operations.
@@ -42,7 +42,7 @@ func (s *UserService) BindUserToAgent(ctx context.Context, oidcToken, agentID st
 	existingUser, err := s.store.GetUserByExternalID(ctx, oidcUser.ExternalID, oidcUser.Issuer)
 	if err != nil {
 		// User doesn't exist, create one.
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, ErrNotFound) {
 			if err := s.store.CreateUser(ctx, oidcUser); err != nil {
 				return nil, fmt.Errorf("create user: %w", err)
 			}

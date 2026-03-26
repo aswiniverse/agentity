@@ -1,6 +1,12 @@
 package user
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// ErrNotFound is returned by store methods when the requested record does not exist.
+var ErrNotFound = errors.New("not found")
 
 // User represents a human user authenticated via an external OIDC provider.
 type User struct {
